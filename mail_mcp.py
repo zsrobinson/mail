@@ -418,8 +418,7 @@ class Mail:
         terms = []
         for key, value in [('SINCE', since), ('BEFORE', before)]:
             if value:
-                datetime.datetime.strptime(value, '%d-%b-%Y')
-                terms.extend([key, quote(value)])
+                terms.extend([key, quote(imap_search_date(value, key.lower()))])
         for value in (sender, recipient, subject):
             text(value)  # Keep control-character and length validation for local filters.
         if unread:
@@ -704,7 +703,8 @@ def tool(name, description, properties, required, read=True):
 MESSAGES = {'folder': S, 'uidvalidity': LOCATION['uidvalidity'],
             'uids': {'type': 'array', 'items': LOCATION['uid'], 'minItems': 1, 'maxItems': 200}}
 CLEANUP = {**MESSAGES, 'dry_run': {'type': 'boolean', 'default': False}}
-SEARCH = {'folder': S, 'sender': S, 'recipient': S, 'subject': S, 'since': S, 'before': S,
+SEARCH = {'folder': S, 'sender': S, 'recipient': S, 'subject': S, 'since': {**S, 'description': 'Inclusive date: YYYY-MM-DD or DD-Mon-YYYY (English month, case-insensitive; 1 or 2 digit day).'},
+          'before': {**S, 'description': 'Exclusive date: YYYY-MM-DD or DD-Mon-YYYY (English month, case-insensitive; 1 or 2 digit day).'},
           'unread': {'type': 'boolean'}, 'label': S,
           'limit': {'type': 'integer', 'minimum': 1, 'maximum': 50}}
 TOOLS = [tool('list_folders', 'HEADERS/METADATA ONLY: list folders. Never returns message bodies.', {}, []),
@@ -734,10 +734,37 @@ TOOLS = [tool('list_folders', 'HEADERS/METADATA ONLY: list folders. Never return
 
 for _tool in TOOLS:
     if _tool['name'] in ('list_messages', 'search_messages'):
-        _tool['description'] += (' Header filters scan metadata envelopes newest-first, stopping at 5000 candidates or a 30-second check between pages. '
+        _tool['description'] += (' since/before accept YYYY-MM-DD or DD-Mon-YYYY (English month, case-insensitive; 1 or 2 digit day). Header filters scan metadata envelopes newest-first, stopping at 5000 candidates or a 30-second check between pages. '
                                  'complete=false means partial results: narrow since/before or folder. '
                                  'scanned/candidates/pages and oldest_scanned_date describe coverage; '
                                  'complete=true means enough matches were found or all candidates were checked.')
+
+
+DATE_MONTHS = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+               'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
+
+
+def parse_search_date(value, field):
+    """Parse date filters without depending on the process locale."""
+    iso = re.fullmatch(r'([0-9]{4})-([0-9]{2})-([0-9]{2})', value)
+    imap = re.fullmatch(r'([0-9]{1,2})-([A-Za-z]{3})-([0-9]{4})', value)
+    try:
+        if iso:
+            year, month, day = map(int, iso.groups())
+        elif imap:
+            day, month_name, year = imap.groups()
+            month = tuple(m.lower() for m in DATE_MONTHS).index(month_name.lower()) + 1
+            year, day = int(year), int(day)
+        else:
+            raise ValueError
+        return datetime.date(year, month, day)
+    except ValueError:
+        raise PublicError(f'{field} must be a valid date in YYYY-MM-DD or DD-Mon-YYYY format.') from None
+
+
+def imap_search_date(value, field):
+    date = parse_search_date(value, field)
+    return f'{date.day:02d}-{DATE_MONTHS[date.month - 1]}-{date.year:04d}'
 
 
 def validate(name, args):
@@ -770,6 +797,11 @@ def validate(name, args):
             raise PublicError('Invalid string')
         elif key in ('uid', 'uidvalidity') and not re.fullmatch('[1-9][0-9]{0,9}', value):
             raise PublicError('Invalid UID')
+
+    if name in ('list_messages', 'search_messages'):
+        dates = {key: parse_search_date(args[key], key) for key in ('since', 'before') if args.get(key)}
+        if 'since' in dates and 'before' in dates and dates['before'] < dates['since']:
+            raise PublicError('before must be on or after since.')
 
 
 def read_credentials():
@@ -1150,7 +1182,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if method == 'initialize':
             proposed = params.get('protocolVersion')
             result = {'protocolVersion': proposed if proposed in PROTOCOLS else PROTOCOLS[-1],
-                      'capabilities': {'tools': {}}, 'serverInfo': {'name': 'fleet-proton-mail', 'version': '0.4.0'}}
+                      'capabilities': {'tools': {}}, 'serverInfo': {'name': 'fleet-proton-mail', 'version': '0.4.1'}}
         elif self.headers.get('MCP-Protocol-Version', PROTOCOLS[0]) not in PROTOCOLS:
             return self.reply(400)
         elif method == 'ping':
