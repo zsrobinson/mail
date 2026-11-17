@@ -916,7 +916,14 @@ def test_http_read_errors_are_safe_and_classified(args, expected, monkeypatch, c
     server.access = None
     worker = threading.Thread(target=server.serve_forever)
     worker.start()
+    def local_connection(address, timeout, source_address):
+        assert address == server.server_address
+        sock = socket.socket()
+        sock.settimeout(5)
+        sock.connect(address)
+        return sock
     connection = http.client.HTTPConnection(*server.server_address)
+    connection._create_connection = local_connection
     try:
         body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                            'params': {'name': 'search_messages', 'arguments': args}})
