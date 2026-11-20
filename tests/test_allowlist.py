@@ -199,3 +199,19 @@ def test_match_counter_and_edit_history_contain_only_metadata(policy):
     assert updated['match_count'] == 1 and updated['matches'][-1]['count'] == 1
     policy.edit(item['id'], {'note':'Synthetic note'})
     assert all(set(row) == {'time','change'} for row in policy.list()['history'])
+
+
+@pytest.mark.parametrize('field,value', [('history',[{'time':'bad','change':'added'}]), ('matches',[{'date':'2026-11-20','count':-1}]), ('id','not-an-id')])
+def test_semantically_corrupt_store_refuses(policy, field, value):
+    data = policy.list()
+    if field == 'history':
+        data[field] = value
+    else:
+        data['entries'][0][field] = value
+    policy.path.write_text(json.dumps(data))
+    assert policy.decision(raw(), 'receiver.example.org') == 'sender_not_allowlisted'
+
+
+def test_duplicate_json_fields_refuse(policy):
+    policy.path.write_text('{"version":1,"version":1,"entries":[],"history":[]}')
+    assert policy.decision(raw(), 'receiver.example.org') == 'sender_not_allowlisted'

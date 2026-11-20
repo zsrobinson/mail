@@ -1,5 +1,5 @@
 """Private, fail-closed sender policy. No MCP management surface."""
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from email import policy
 from email.parser import BytesParser
 import json
@@ -76,6 +76,24 @@ def authenticated(headers, domain, authserv):
     return False
 
 
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('Duplicate policy field')
+        result[key] = value
+    return result
+
+
+def check_history(rows):
+    if not isinstance(rows, list):
+        raise ValueError('Invalid edit history')
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {'time', 'change'} or row['change'] not in ('added', 'updated', 'removed', 'address_changed', 'note_changed', 'expiry_changed', 'expired'):
+            raise ValueError('Invalid edit history')
+        timestamp(row['time'])
+
+
 class Allowlist:
     def __init__(self, filename):
         self.path = Path(filename)
@@ -98,24 +116,34 @@ class Allowlist:
             stamp = (info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size)
             if stamp == self.stamp and self.cached is not None:
                 return self.cached
-            data = json.load(stream)
-        if not isinstance(data, dict) or data.get('version') != 1 or not isinstance(data.get('entries'), list) or not isinstance(data.get('history'), list):
+            data = json.load(stream, object_pairs_hook=unique_object)
+        if not isinstance(data, dict) or type(data.get('version')) is not int or data.get('version') != 1 or not isinstance(data.get('entries'), list) or not isinstance(data.get('history'), list):
             raise ValueError('Invalid policy')
+        check_history(data['history'])
         ids, addresses = set(), set()
         for entry in data['entries']:
             if not isinstance(entry, dict) or address(entry['address']) != entry['address'] or entry['id'] in ids or entry['address'] in addresses:
                 raise ValueError('Invalid entry')
+            if not isinstance(entry['id'], str) or not re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', entry['id']):
+                raise ValueError('Invalid entry identity')
+            check_history(entry.get('edit_history', []))
             ids.add(entry['id'])
             addresses.add(entry['address'])
             timestamp(entry['added_at'])
             if entry.get('expires_at'):
                 timestamp(entry['expires_at'])
-            if not isinstance(entry.get('note'), str) or type(entry.get('match_count')) is not int or entry['match_count'] < 0:
+            if not isinstance(entry.get('note'), str) or len(entry['note']) > 1000 or any(ord(c) < 32 for c in entry['note']) or type(entry.get('match_count')) is not int or entry['match_count'] < 0:
                 raise ValueError('Invalid entry')
             if entry.get('last_matched_at'):
                 timestamp(entry['last_matched_at'])
-            if not isinstance(entry.get('matches', []), list):
-                raise ValueError('Invalid history')
+            matches = entry.get('matches', [])
+            if not isinstance(matches, list) or len(matches) > 366:
+                raise ValueError('Invalid match history')
+            previous = ''
+            for row in matches:
+                if not isinstance(row, dict) or set(row) != {'date', 'count'} or type(row['count']) is not int or row['count'] < 0 or not isinstance(row['date'], str) or date.fromisoformat(row['date']).isoformat() != row['date'] or row['date'] <= previous:
+                    raise ValueError('Invalid match history')
+                previous = row['date']
         self.cached, self.stamp = data, stamp
         return data
 
