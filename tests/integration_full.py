@@ -53,6 +53,8 @@ class FakeIMAP(socketserver.StreamRequestHandler):
             args = rest[0] if rest else ''
             if cmd == 'CAPABILITY':
                 write(b'* CAPABILITY IMAP4rev1 MOVE\r\n')
+            elif cmd == 'NOOP':
+                pass
             elif cmd == 'LOGIN':
                 pass
             elif cmd in ('EXAMINE', 'SELECT'):
@@ -137,7 +139,7 @@ def main():
             policy = Allowlist(policy_path)
             policy.edit(changes={'address':'updates@example.org'})
             mail_mcp._policy_instance = policy
-            activity = Activity(temp / 'activity/activity.jsonl')
+            activity = Activity(temp / 'activity/activity.jsonl', temp / 'health/health.jsonl')
             mail_mcp._activity_instance = activity
             imap = socketserver.ThreadingTCPServer(('127.0.0.1', 0), FakeIMAP)
             imap.daemon_threads = True
@@ -159,6 +161,10 @@ def main():
             assert FakeIMAP.body_fetches == ['1']
             # Header-only operations never load a body.
             call('list_messages', {'folder':'INBOX'})
+            assert FakeIMAP.body_fetches == ['1']
+            probe = mail_mcp.probe_bridge(factory)
+            assert probe['connected'] and probe['login_ms'] >= 0
+            activity.health_store.append(probe)
             assert FakeIMAP.body_fetches == ['1']
             directory = temp / 'api'
             directory.mkdir(mode=0o750)

@@ -68,12 +68,16 @@ def action_detail(ident, rows, all_rows):
     row = rows[-1]
     completed = sum(row['counts'][k] for k in ('moved', 'labelled', 'marked', 'drafts'))
     requested = row['counts']['requested']
-    status = 'dry_run' if row.get('dry_run') else 'completed' if row['outcome'] == 'ok' else 'uncertain'
+    chunks = row.get('chunks', [])
+    uncertain = sum(c['size'] for c in chunks if c['status'] == 'uncertain')
+    if row['tool'] == 'create_draft' and row['outcome'] != 'ok':
+        uncertain = requested
+    status = 'dry_run' if row.get('dry_run') else 'completed' if row['outcome'] == 'ok' else 'uncertain' if uncertain else 'partial' if completed else 'failed'
     restored = next((r['action_id'] for r in all_rows if r.get('source_action_id') == ident and not r.get('dry_run') and r['outcome'] == 'ok'), None)
     value = dict(id=ident, tool=row['tool'], kind=WRITE_KINDS.get(row['tool']), time=row['time'],
                  dry_run=bool(row.get('dry_run')), status=status,
-                 counts=dict(requested=requested, completed=completed, uncertain=max(0, requested - completed) if status == 'uncertain' else 0, failed=0),
-                 chunks=[])
+                 counts=dict(requested=requested, completed=completed, uncertain=uncertain, failed=max(0, requested - completed - uncertain) if status != 'dry_run' else 0),
+                 chunks=chunks)
     if row['tool'] == 'archive_messages':
         eligible = status == 'completed' and not restored
         value['unarchive'] = dict(eligible=eligible, reason=None if eligible else 'This action is a preview, incomplete, or already restored.', restored_by=restored)
@@ -164,6 +168,14 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
         # All mutations re-verify the forwarded web application's audience.
         tokens = self.headers.get_all('Cf-Access-Jwt-Assertion', [])
         if parsed.path.startswith('/api/') and (self.server.access is None or not self.server.access.authorized(tokens)):
+            # Consume only a bounded, unambiguous body before closing HTTP/1.0.
+            # Otherwise a client writing headers/body separately can race a 401
+            # and receive a broken pipe instead of the authentication response.
+            lengths = self.headers.get_all('Content-Length', [])
+            if len(lengths) == 1 and lengths[0].isdigit() and not self.headers.get('Transfer-Encoding') and not self.headers.get('Expect'):
+                length = int(lengths[0])
+                if 0 < length <= 16384:
+                    self.rfile.read(length)
             return self.reply(401, {'error': 'Invalid or missing Access assertion'})
         if self.headers.get('Transfer-Encoding') or len(self.headers.get_all('Content-Length', [])) > 1:
             return self.reply(400, {'error': 'Invalid framing'})

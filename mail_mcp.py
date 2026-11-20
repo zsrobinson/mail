@@ -600,7 +600,9 @@ class Mail:
         messages = self.metadata_batch(folder, uids, uidvalidity)
         changes = [{'uids': [item['uid']], 'subject': item['headers']['Subject'],
                     'sender': item['headers']['From'], 'destination': target} for item in messages]
-        action_id = str(uuid4())
+        metrics = getattr(_local, 'metrics', None)
+        action_id = metrics.get('action_id') if metrics else None
+        action_id = action_id or str(uuid4())
         configured_chunk = setting('PROTON_IMAP_CHUNK_SIZE', 50)
         chunk_size = int(configured_chunk)
         if chunk_size < 1 or chunk_size != configured_chunk:
@@ -614,6 +616,7 @@ class Mail:
             metrics = getattr(_local, 'metrics', None)
             if metrics is not None:
                 metrics['chunks'] += 1
+                metrics.setdefault('chunk_metadata', []).append({'index': index, 'size': len(chunk), 'status': 'dry_run' if dry_run else 'failed'})
             def stopped(uncertain, message):
                 return {'action_id': action_id, 'completed': completed, 'completed_chunks': completed_chunks,
                         'uncertain': uncertain, 'uncertain_uids': chunk if uncertain else [],
@@ -628,6 +631,8 @@ class Mail:
                 return stopped(False, 'Deadline expired or action log unavailable; no command attempted for this chunk.')
             if dry_run:
                 continue
+            if metrics is not None:
+                metrics['chunk_metadata'][-1]['status'] = 'uncertain'
             try:
                 check_deadline()
                 uid_set = ','.join(chunk)
@@ -646,6 +651,8 @@ class Mail:
                                 'outcomes': {uid: 'completed' for uid in chunk}})
                 completed.extend(chunk)
                 completed_chunks.append(index)
+                if metrics is not None:
+                    metrics['chunk_metadata'][-1]['status'] = 'completed'
             except Exception:
                 try:
                     journal.append({**entry, 'status': 'uncertain',
@@ -871,7 +878,7 @@ def _call(name, args, factory=connect, journal=None):
         elif name == 'unarchive_messages':
             return mail.unarchive(journal, **args)
         elif name == 'create_draft':
-            entry = {'action_id': str(uuid4()), 'tool': name, 'folder': 'Drafts', 'uids': [],
+            entry = {'action_id': _local.metrics.get('action_id') or str(uuid4()), 'tool': name, 'folder': 'Drafts', 'uids': [],
                      'destination': 'Drafts'}
             journal.append({**entry, 'status': 'attempting'})
             try:
@@ -952,8 +959,10 @@ def call(name, args, factory=connect, journal=None):
     outcome = 'error'
     try:
         validate(name, args)
-        metrics['requested'] = len(args.get('uids', args.get('messages', [])))
+        metrics['requested'] = 1 if name == 'create_draft' else len(args.get('uids', args.get('messages', [])))
         write = name in ('archive_messages', 'unarchive_messages', 'move_messages', 'add_labels', 'mark_read', 'create_draft')
+        if write:
+            metrics['action_id'] = str(uuid4())
         with WriteDeadline() if write else nullcontext():
             try:
                 result = _call(name, args, factory, journal)
@@ -973,6 +982,8 @@ def call(name, args, factory=connect, journal=None):
                         outcome = label
             if outcome != 'ok':
                 error_class = 'deadline' if outcome == 'timeout' else 'stopped'
+            if write and isinstance(result, dict):
+                result.setdefault('action_id', metrics['action_id'])
             return result
     except PublicError as error:
         outcome = 'timeout' if 'timed out' in str(error) else 'tool_error'
@@ -987,7 +998,7 @@ def call(name, args, factory=connect, journal=None):
         record = call_record(name, metrics, started, outcome, error_class,
                              len(json.dumps(args).encode()),
                              len(json.dumps(result).encode()) if result is not None else 0)
-        activity_log().record({**record, 'bridge_ok': metrics.get('login_ok', False)}, result, args)
+        activity_log().record({**record, 'bridge_ok': metrics.get('login_ok', False), 'chunks_meta': metrics.get('chunk_metadata', []), 'action_id': metrics.get('action_id')}, result, args)
         if getattr(_local, 'transport', None) is not None:
             _local.transport['record'] = record
         else:

@@ -52,12 +52,14 @@ class Activity:
                 counts[field] = len(result.get('completed', []))
             counts['drafts'] = int(tool == 'create_draft' and result.get('saved') is True)
         outcome = 'refused' if any(counts['refused'].values()) else 'busy' if telemetry.get('error_class') == 'busy' else 'ok' if telemetry['outcome'] == 'ok' else 'error'
+        action_id = result.get('action_id') or telemetry.get('action_id')
         row = dict(time=telemetry['ts'], tool=tool, outcome=outcome, counts=counts,
                    duration_ms=telemetry['total_ms'], login_ms=telemetry['phase']['login'],
                    connected=telemetry.get('bridge_ok', False),
                    error_class=telemetry['error_class'] if telemetry['error_class'] in ERRORS else None,
-                   action_id=result.get('action_id') if isinstance(result.get('action_id'), str) and re.fullmatch(r'[a-f0-9-]{36}', result['action_id']) else None,
+                   action_id=action_id if isinstance(action_id, str) and re.fullmatch(r'[a-f0-9-]{36}', action_id) else None,
                    dry_run=args.get('dry_run') is True,
+                   chunks=[{'index': int(c['index']), 'size': int(c['size']), 'status': c['status']} for c in telemetry.get('chunks_meta', []) if c.get('status') in ('completed', 'dry_run', 'uncertain', 'failed')],
                    source_action_id=args.get('action_id') if tool == 'unarchive_messages' and isinstance(args.get('action_id'), str) and re.fullmatch(r'[a-f0-9-]{36}', args['action_id']) else None)
         self.append(row)
         if self.health_store is not None and (telemetry['phase'].get('connect', 0) > 0 or row['login_ms'] > 0):
