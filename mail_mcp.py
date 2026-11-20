@@ -23,6 +23,8 @@ from contextlib import nullcontext
 from action_log import ActionLog, PublicError
 from uuid import uuid4
 from access import configured_access
+from allowlist import Allowlist
+from activity import Activity
 
 MAX_MESSAGE = 2 * 1024 * 1024
 MAX_REQUEST = 128 * 1024
@@ -348,11 +350,11 @@ class Mail:
         self.select(folder, uidvalidity)
         return self.metadata_batch(folder, [uid], uidvalidity)[0]
 
-    def metadata_batch(self, folder, uids, uidvalidity):
+    def metadata_batch(self, folder, uids, uidvalidity, policy_check=False):
         if not uids:
             return []
         data = ok(self.client.uid('FETCH', ','.join(uids),
-                  '(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (' + self.HEADER_FIELDS + ')]<0.65537>)'))
+                  '(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (' + self.HEADER_FIELDS + (' Authentication-Results' if policy_check else '') + ')]<0.65537>)'))
         found = {}
         for index, row in enumerate(data):
             if not isinstance(row, tuple):
@@ -371,6 +373,8 @@ class Mail:
                 raise PublicError('Unexpected message identity')
             uid = identity[1].decode()
             found[uid] = self.parse_metadata(folder, uid, uidvalidity, attributes, raw)
+            if policy_check:
+                found[uid]['_policy_headers'] = raw
         if set(found) != set(uids):
             raise PublicError('Message missing; search again')
         metrics = getattr(_local, 'metrics', None)
@@ -468,11 +472,17 @@ class Mail:
 
     def message(self, journal, folder, uid, uidvalidity, metadata=None):
         metadata = metadata or self.metadata(folder, uid, uidvalidity)
+        if '_policy_headers' not in metadata:
+            self.select(folder, uidvalidity)
+            metadata = self.metadata_batch(folder, [uid], uidvalidity, policy_check=True)[0]
+        reason = sender_policy().decision(metadata['_policy_headers'], os.environ.get('MAIL_TRUSTED_AUTHSERV_ID', ''))
+        if reason:
+            return {'folder': folder, 'uid': uid, 'uidvalidity': uidvalidity,
+                    'refusal': {'code': reason, 'message': 'Headers only. Ask the owner to add or verify the sender in the mail app.'}}
         if metadata['size'] > MAX_MESSAGE:
             raise PublicError('Message exceeds 2 MiB read limit')
         entry = {'action_id': str(uuid4()), 'tool': 'read_messages', 'folder': folder,
-                 'uids': [uid], 'uidvalidity': uidvalidity, 'subject': metadata['headers']['Subject'],
-                 'sender': metadata['headers']['From'], 'destination': None}
+                 'uids': [uid], 'uidvalidity': uidvalidity, 'destination': None}
         journal.append({**entry, 'status': 'attempting'})
         try:
             data = ok(self.client.uid('FETCH', uid, f'(UID BODY.PEEK[]<0.{MAX_MESSAGE + 1}>)'))
@@ -501,7 +511,7 @@ class Mail:
         results = {}
         for (folder, validity), refs in groups.items():
             self.select(folder, validity)
-            items = self.metadata_batch(folder, sorted({r['uid'] for r in refs}, key=int), validity)
+            items = self.metadata_batch(folder, sorted({r['uid'] for r in refs}, key=int), validity, policy_check=True)
             for item in items:
                 results[(folder, validity, item['uid'])] = self.message(
                     journal, folder, item['uid'], validity, item)
@@ -695,7 +705,7 @@ TOOLS = [tool('list_folders', 'HEADERS/METADATA ONLY: list folders. Never return
          tool('search_messages', 'HEADERS ONLY: sender/recipient/subject/date/unread search in a folder or label mailbox. Never searches/returns bodies. web_url opens that message in Proton web (grouping disabled, matching signed-in account), or is null. All Mail requires since and before; use a short date range. Search network work has a 45s deadline; date bounds and limit do not guarantee fast All Mail scans.', SEARCH, []),
          tool('list_unsubscribe', 'HEADERS ONLY: list unsubscribe header values for explicit messages. Never opens URLs, makes requests or sends mail.',
               MESSAGES, list(MESSAGES)),
-         tool('read_messages', 'BODY READ: returns message bodies and attachment names/sizes for up to 50 explicit refs. web_url opens that message in Proton web (grouping disabled, matching signed-in account), or is null. No attachment bytes. Set this tool to ask first in the client. Server does not enforce consent.',
+         tool('read_messages', 'BODY READ: returns message bodies and attachment names/sizes for up to 50 explicit refs. web_url opens that message in Proton web (grouping disabled, matching signed-in account), or is null. No attachment bytes. Set this tool to ask first in the client. Server enforces an authenticated sender allowlist per message.',
               {'messages': {'type': 'array', 'minItems': 1, 'maxItems': 50,
                             'items': {'type': 'object', 'properties': LOCATION,
                                       'required': list(LOCATION), 'additionalProperties': False}}}, ['messages']),
@@ -808,6 +818,8 @@ def connect():
             client.starttls(context)
         with phase('login'):
             client.login(username, password)
+            if getattr(_local, 'metrics', None) is not None:
+                _local.metrics['login_ok'] = True
         client.bridge_username = username
         # Gluon advertises MOVE only AFTER authentication; imaplib's cached
         # pre-login capabilities are insufficient for the cleanup gate.
@@ -823,12 +835,10 @@ def connect():
 def audit_headers(journal, name, result, folder=None):
     items = result.get('messages', []) if isinstance(result, dict) else []
     for item in items or [{}]:
-        headers = item.get('headers', {})
         journal.append({'tool': name, 'folder': item.get('folder', folder),
                         'uids': [item['uid']] if item.get('uid') else [],
                         'uidvalidity': item.get('uidvalidity'),
-                        'subject': headers.get('Subject', item.get('subject')),
-                        'sender': headers.get('From', item.get('sender')), 'destination': None, 'status': 'completed'})
+                        'destination': None, 'status': 'completed'})
 
 
 def _call(name, args, factory=connect, journal=None):
@@ -862,11 +872,11 @@ def _call(name, args, factory=connect, journal=None):
             return mail.unarchive(journal, **args)
         elif name == 'create_draft':
             entry = {'action_id': str(uuid4()), 'tool': name, 'folder': 'Drafts', 'uids': [],
-                     'subject': args['subject'], 'sender': client.bridge_username,
                      'destination': 'Drafts'}
             journal.append({**entry, 'status': 'attempting'})
             try:
                 result = mail.draft(**args)
+                result['action_id'] = entry['action_id']
                 journal.append({**entry, 'folder': result['folder'], 'destination': result['folder'],
                                 'status': 'completed', 'messageId': result['messageId']})
                 return result
@@ -907,6 +917,26 @@ def call_record(name, metrics, started, outcome, error_class, req_bytes, resp_by
             'outcome': outcome, 'error_class': error_class, 'req_bytes': req_bytes, 'resp_bytes': resp_bytes,
             'phase': {k: round(metrics[k] * 1000, 3) for k in PHASES},
             **{k: metrics[k] for k in COUNTS}, 'complete': metrics['complete']}
+
+
+_policy_instance = None
+_activity_instance = None
+
+
+def sender_policy():
+    global _policy_instance
+    filename = os.environ.get('MAIL_ALLOWLIST', '/var/lib/proton-mail/policy/allowlist.json')
+    if _policy_instance is None or str(_policy_instance.path) != filename:
+        _policy_instance = Allowlist(filename)
+    return _policy_instance
+
+
+def activity_log():
+    global _activity_instance
+    filename = os.environ.get('MAIL_ACTIVITY', '/var/lib/proton-mail/activity/activity.jsonl')
+    if _activity_instance is None or str(_activity_instance.path) != filename:
+        _activity_instance = Activity(filename, os.environ.get('MAIL_HEALTH', str(Path(filename).parent.parent / 'health/health.jsonl')))
+    return _activity_instance
 
 
 def log_call(record):
@@ -957,6 +987,7 @@ def call(name, args, factory=connect, journal=None):
         record = call_record(name, metrics, started, outcome, error_class,
                              len(json.dumps(args).encode()),
                              len(json.dumps(result).encode()) if result is not None else 0)
+        activity_log().record({**record, 'bridge_ok': metrics.get('login_ok', False)}, result, args)
         if getattr(_local, 'transport', None) is not None:
             _local.transport['record'] = record
         else:
@@ -1037,7 +1068,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def setup(self):
         super().setup()
-        self.connection.settimeout(25)
+        self.connection.settimeout(20)
 
     def reply(self, status, value=None):
         data = json.dumps(value).encode() if value is not None else b''
@@ -1108,7 +1139,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if method == 'initialize':
             proposed = params.get('protocolVersion')
             result = {'protocolVersion': proposed if proposed in PROTOCOLS else PROTOCOLS[-1],
-                      'capabilities': {'tools': {}}, 'serverInfo': {'name': 'fleet-proton-mail', 'version': '0.3.0'}}
+                      'capabilities': {'tools': {}}, 'serverInfo': {'name': 'fleet-proton-mail', 'version': '0.4.0'}}
         elif self.headers.get('MCP-Protocol-Version', PROTOCOLS[0]) not in PROTOCOLS:
             return self.reply(400)
         elif method == 'ping':
@@ -1143,9 +1174,51 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 transport['started'], 'refused', refusal_code or 'internal', length, 0)
             record.update(req_bytes=length, resp_bytes=len(json.dumps(response).encode()),
                           total_ms=round((time.monotonic() - transport['started']) * 1000, 3))
+            if transport['record'] is None:
+                activity_log().record(record, None, {})
             log_call(record)
             _local.transport = None
         self.reply(200, response)
+
+
+def probe_bridge(factory=connect):
+    started = time.monotonic()
+    metrics = new_metrics()
+    _local.metrics = metrics
+    client = None
+    error_class = None
+    healthy = False
+    try:
+        client = factory()
+        ok(client.noop())
+        healthy = True
+    except Exception as error:
+        error_class = type(error).__name__ if type(error) in (TimeoutError, OSError, RuntimeError) else 'internal'
+    finally:
+        if client is not None:
+            try:
+                client.logout()
+            except Exception:
+                pass
+        _local.metrics = None
+    return dict(time=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                connected=healthy, login_ms=round(metrics['login'] * 1000, 3) if metrics['login'] else round((time.monotonic() - started) * 1000, 3),
+                error_class=error_class)
+
+
+def start_health_monitor(server):
+    def monitor():
+        while not server.draining.is_set():
+            if server.mail_slot.acquire(blocking=False):
+                try:
+                    row = probe_bridge()
+                    activity_log().health_store.append(row)
+                except Exception:
+                    logging.warning('mail_health_unavailable')
+                finally:
+                    server.mail_slot.release()
+            server.draining.wait(60)
+    threading.Thread(target=monitor, daemon=True).start()
 
 
 def create_server():
@@ -1154,6 +1227,13 @@ def create_server():
     verifier = configured_access()
     server = BoundedHTTPServer(('127.0.0.1', 8766), Handler)
     server.access = verifier
+    api_path = os.environ.get('MAIL_CORE_SOCKET')
+    if api_path:
+        from core_api import start_api, start_metrics
+        server.core_api = start_api(api_path, server.mail_slot, call, sender_policy(), activity_log(), listener_healthy=lambda: not server.draining.is_set())
+        if os.environ.get('MAIL_METRICS_PORT'):
+            server.domain_metrics = start_metrics(activity_log(), os.environ['MAIL_METRICS_PORT'])
+        start_health_monitor(server)
     return server
 
 

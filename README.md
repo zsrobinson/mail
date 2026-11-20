@@ -1,9 +1,9 @@
-# protonmcp
+# Mail
 
 A small Streamable HTTP MCP server for Proton Mail through a local Proton Bridge.
 It never sends mail and never permanently deletes mail. All existing tools are
 enabled: folder listing, header-only listing/search, unsubscribe-header inspection,
-explicit body reads, draft creation, archive, unarchive, move, label, mark-read, and action history.
+authenticated, allowlisted body reads, draft creation, archive, unarchive, move, label, mark-read, and action history.
 Archive/move use IMAP MOVE; labels use COPY; mark-read sets only Seen. There is no
 SMTP client, trash/delete tool, EXPUNGE or CLOSE command. Unsubscribe links are returned
 for manual handling, never opened or sent. Drafts are saved with APPEND, never sent.
@@ -50,7 +50,8 @@ public host must set `PROTON_PUBLIC_HOST` to that same host before switching cod
 
 Headers and audit history reveal senders and subjects. Body reads and mailbox writes
 require deliberate client permission choices; the server authenticates the caller
-but does not enforce per-operation consent. Keep credentials, certificates, audit
+and enforces sender authentication and the private allowlist for bodies. Client
+confirmation still governs other deliberate operations. Keep credentials, certificates, audit
 logs, mail exports and Bridge state outside the checkout. Never commit captured mail.
 Tests use generated synthetic messages and local cryptographic fixtures only.
 
@@ -149,3 +150,68 @@ uv run --locked pytest -q
 
 MIT licensed. Deployment-specific installers, systemd units and operational helpers
 belong in the operator's deployment repository.
+
+
+## Enforced sender policy and web app
+
+Body reads require one exact ASCII From address (case-insensitive, ignoring display
+names), an active allowlist entry, and a trusted receiver Authentication-Results
+header. Only the first such header is considered. DMARC pass for the From domain
+or a DKIM pass with strict domain alignment qualifies; upstream headers, multiple
+From addresses, lookalikes and expired approvals refuse that message. Other approved
+messages in the same batch still return. Refusals carry only message location and
+a short reason, never a body, snippet or attachment metadata.
+
+`MAIL_ALLOWLIST` names an owned regular mode-0600 JSON file inside a service-owned
+mode-0700 directory. A missing, corrupt, unreadable, linked or unsafe store refuses
+all body reads. The file is reloaded on inode/mtime/ctime/size changes. Initialize
+it as the service account with `{"version":1,"entries":[],"history":[]}` and
+manage entries in the web app. There is no MCP allowlist tool. Configure
+`MAIL_TRUSTED_AUTHSERV_ID` to the receiving server's exact trusted id; the generic
+default is empty and never authorizes a body read. Strict alignment can conservatively
+refuse a sender; `auth_audit.py` produces aggregate-only header coverage counts
+when deliberately run with the service account and its existing credential.
+
+The private web API binds only the Unix socket in `MAIL_CORE_SOCKET`. Use a
+service-owned, group-traversable setgid directory and a separate web service user;
+never add an agent account to its group. All `/api/*` requests independently verify
+the forwarded Access assertion against `MAIL_WEB_ACCESS_AUD`. The existing MCP
+continues to use `ACCESS_AUD`. `ACCESS_JWKS_FILE` optionally uses a fresh root-owned
+public-key cache so an isolated core can prohibit external networking while still
+verifying JWTs. Keep that cache refreshed outside the core; its absence, unsafe
+permissions or stale timestamp fail closed.
+
+`MAIL_ACTIVITY` is a separate metadata-only journal with daily rotation and about
+a year of retention. It records fixed tool/outcome/error classes, counts, duration
+and write action ids, never mail content, addresses, folders or UIDs. New legacy
+journal records also omit subjects and addresses; historical action records are
+not imported into web activity. `MAIL_HEALTH` optionally selects the private
+probe-history path. Serialized probes perform login and NOOP only and skip a busy
+core; they never select or read a message. `MAIL_METRICS_PORT` optionally enables
+a loopback aggregate-only Prometheus listener, separate from the private API.
+
+The React web app in `web/` uses the shared shell, a pinned shell commit, cyan
+Flexoki theme, charts, activity and action pages, allowlist management and health.
+It verifies Access and same-origin mutations before forwarding a fixed route set
+to the core socket. Undo always previews before a single-use confirmation. See
+[web/API.md](web/API.md) for schemas, build instructions and fixture mode. Fixtures
+are development-only and refuse production or Access/core configuration.
+
+Validation:
+
+```sh
+uv sync --locked
+uv run --locked ruff check .
+uv run --locked pytest -q
+cd web
+npm ci
+npm run check
+npm run build
+cd ..
+uv run --locked python tests/integration_full.py
+```
+
+The full-stack smoke runs a fake wire IMAP server, synthetic TLS/JWKS, the real
+private API and the production web server. It verifies mixed body-read refusals,
+JWT issuer/audience/expiry enforcement, policy mutations and private metrics,
+without opening installed service state or using real credentials or mail.

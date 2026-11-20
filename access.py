@@ -1,4 +1,7 @@
 """Cloudflare Access verification, mirroring services/print/server.py."""
+import json
+import stat
+import time
 import logging
 import os
 import re
@@ -14,6 +17,27 @@ class AccessJWT:
         self.jwks = jwt.PyJWKClient(f'{self.issuer}/cdn-cgi/access/certs',
                                    cache_jwk_set=True, cache_keys=False,
                                    lifespan=300, timeout=5)
+
+        filename = os.environ.get('ACCESS_JWKS_FILE')
+        if filename:
+            class LocalJWKClient(jwt.PyJWKClient):
+                def fetch_data(self):
+                    try:
+                        fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW)
+                        with os.fdopen(fd, 'rb') as stream:
+                            info = os.fstat(stream.fileno())
+                            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_nlink != 1 or info.st_size > 1048576 or not 0 <= time.time() - info.st_mtime < 3600:
+                                raise ValueError()
+                            data = json.load(stream)
+                        if not isinstance(data, dict) or not isinstance(data.get('keys'), list):
+                            raise ValueError()
+                        if self.jwk_set_cache is not None:
+                            self.jwk_set_cache.put(data)
+                        return data
+                    except (OSError, ValueError, TypeError):
+                        raise jwt.PyJWKClientError('Local public verification keys unavailable') from None
+            self.jwks = LocalJWKClient(self.issuer + '/cdn-cgi/access/certs',
+                                      cache_jwk_set=True, cache_keys=False, lifespan=300)
 
     def validate(self, token):
         jwt = self.jwt

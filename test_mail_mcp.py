@@ -15,6 +15,15 @@ from action_log import ActionLog, PublicError
 
 @pytest.fixture(autouse=True)
 def offline(monkeypatch, tmp_path):
+    monkeypatch.setenv('MAIL_ACTIVITY', str(tmp_path / 'activity' / 'activity.jsonl'))
+    policy = tmp_path / 'policy'
+    policy.mkdir(mode=0o700)
+    filename = policy / 'allowlist.json'
+    filename.write_text(json.dumps({'version': 1, 'entries': [], 'history': []}))
+    filename.chmod(0o600)
+    monkeypatch.setenv('MAIL_ALLOWLIST', str(filename))
+    monkeypatch.setenv('MAIL_TRUSTED_AUTHSERV_ID', 'receiver.example.invalid')
+    mail.sender_policy().edit(changes={'address': 'sender@example.invalid'})
     monkeypatch.setenv('PROTON_ACTION_LOG', str(tmp_path / 'actions' / 'audit.jsonl'))
     monkeypatch.setattr(mail.imaplib, 'IMAP4', Mock(side_effect=AssertionError('Live IMAP forbidden')))
     monkeypatch.setattr(socket, 'create_connection', Mock(side_effect=AssertionError('External network forbidden')))
@@ -25,6 +34,7 @@ def generated_message():
     message['From'] = 'sender@example.invalid'
     message['To'] = 'recipient@example.invalid'
     message['Subject'] = 'Synthetic fixture'
+    message['Authentication-Results'] = 'receiver.example.invalid; dmarc=pass header.from=example.invalid'
     message['X-Pm-Internal-Id'] = 'synthetic-id=='
     message.set_content('Synthetic body created for tests.')
     return message
@@ -167,9 +177,10 @@ def test_web_url_validates_opaque_id(value):
     assert (result is not None) == (value == 'synthetic-id==')
 
 
-def test_busy_call_does_not_block_ping(monkeypatch, caplog):
+def test_busy_call_does_not_block_ping(monkeypatch, caplog, tmp_path):
     # Real loopback transport with mocked mail, no credential or external requests.
     monkeypatch.undo()
+    monkeypatch.setenv('MAIL_ACTIVITY', str(tmp_path / 'activity' / 'calls.jsonl'))
     started, release = threading.Event(), threading.Event()
     def operation(*args):
         started.set()
@@ -807,3 +818,25 @@ def test_budget_return_closes_connection(monkeypatch):
                        factory=lambda: client)
     assert not result['complete'] and len(result['messages']) == 1
     assert client.logged_out and mail._local.metrics is None
+
+
+def test_mixed_body_reads_refuse_per_message_before_fetch():
+    class Mixed(BatchIMAP):
+        def uid(self, command, *args):
+            status, rows = super().uid(command, *args)
+            if command == 'FETCH' and 'HEADER.FIELDS' in args[1]:
+                adjusted = []
+                for attrs, raw in rows:
+                    if b'UID 2 ' in attrs:
+                        raw = raw.replace(b'sender@example.invalid', b'attacker@example.invalid')
+                    adjusted.append((attrs, raw))
+                return status, adjusted
+            return status, rows
+    client = Mixed(2)
+    result = mail.call('read_messages', {'messages': [dict(folder='INBOX', uid=u, uidvalidity='1') for u in client.uids]}, factory=lambda: client)
+    assert 'body' in result['messages'][0]
+    refused = result['messages'][1]
+    assert set(refused) == {'folder', 'uid', 'uidvalidity', 'refusal'}
+    assert refused['refusal']['code'] == 'sender_not_allowlisted'
+    body_fetches = [c for c in client.commands if c[0] == 'FETCH' and 'BODY.PEEK[]' in c[2]]
+    assert len(body_fetches) == 1 and body_fetches[0][1] == '1'
