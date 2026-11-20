@@ -7,7 +7,7 @@ import {
   PageMeta,
   PageTitle,
 } from "@zsrobinson/shell"
-import { TrendChart } from "@zsrobinson/shell/blocks/chart-card"
+import { LatencySparkline } from "@/components/charts"
 import {
   DetailList,
   DetailRow,
@@ -25,7 +25,7 @@ import {
 import { Badge } from "@zsrobinson/shell/ui/badge"
 import { Skeleton } from "@zsrobinson/shell/ui/skeleton"
 import { StateBadge } from "@/components/badges"
-import { epoch, formatInteger, formatMs } from "@/lib/format"
+import { formatInteger, formatMs } from "@/lib/format"
 import { healthQuery } from "@/lib/queries"
 import type { HealthComponent } from "@/lib/types"
 
@@ -76,8 +76,6 @@ function HealthPage() {
   )
 }
 
-const latencyConfig = { ms: { label: "Latency", color: "var(--chart-1)" } }
-
 function ComponentCard({ component: c }: { component: HealthComponent }) {
   const measured = c.latency.length > 0
   return (
@@ -90,12 +88,9 @@ function ComponentCard({ component: c }: { component: HealthComponent }) {
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {measured ? (
-          <TrendChart
-            data={c.latency.map((p) => ({ time: epoch(p.time), ms: p.ms }))}
-            config={latencyConfig}
+          <LatencySparkline
+            points={c.latency}
             label={`${c.name} recent latency`}
-            format={formatMs}
-            sparkline
           />
         ) : null}
         <DetailList>

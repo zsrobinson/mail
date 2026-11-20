@@ -74,7 +74,7 @@ export function SenderFields({
           <FieldError>{errors.address}</FieldError>
         ) : (
           <FieldDescription>
-            One exact address. Bodies from it can be read.
+            One exact address. Authenticated mail from it can be read.
           </FieldDescription>
         )}
       </Field>

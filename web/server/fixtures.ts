@@ -146,7 +146,10 @@ function generate(now: number) {
         counts.requested = int(next, 1, 20)
         counts.returned = outcome === "ok" ? counts.requested : 0
       } else if (kind) {
-        counts.requested = kind === "draft" ? 1 : int(next, 1, 120)
+        // Mostly small batches with the occasional larger cleanup, so messages
+        // changed stay in proportion to write calls.
+        counts.requested =
+          kind === "draft" ? 1 : int(next, 1, next() < 0.85 ? 12 : 60)
         duration = int(next, 400, 5200)
       }
       if (outcome === "busy") duration = int(next, 2, 12)

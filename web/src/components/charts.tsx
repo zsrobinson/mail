@@ -1,4 +1,15 @@
-import { Bar, BarChart, CartesianGrid, LabelList, XAxis, YAxis } from "recharts"
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  LabelList,
+  ReferenceDot,
+  XAxis,
+  YAxis,
+} from "recharts"
+import { useIsMobile } from "@zsrobinson/shell/hooks/use-mobile"
 import {
   ChartContainer,
   ChartLegend,
@@ -8,7 +19,9 @@ import {
   type ChartConfig,
 } from "@zsrobinson/shell/ui/chart"
 import { chartNumber } from "@zsrobinson/shell/blocks/chart-card"
-import { epoch } from "@/lib/format"
+import { epoch, formatMs } from "@/lib/format"
+import { countTicks, evenTicks } from "@/lib/ticks"
+import type { LatencyPoint } from "@/lib/types"
 
 type Row = { start: string } & Record<string, number | string>
 
@@ -29,16 +42,29 @@ export function StackedBars({
   bucketSeconds,
   label,
   height = "h-56",
+  maxTicks = 7,
 }: {
   rows: Row[]
   config: ChartConfig
   bucketSeconds: number
   label: string
   height?: string
+  /** Most x labels at desktop width; phones get half. */
+  maxTicks?: number
 }) {
+  const mobile = useIsMobile()
   const keys = Object.keys(config)
   const data = rows.map((row) => ({ ...row, time: epoch(row.start) }))
   const format = tickFormat(bucketSeconds)
+  const ticks = evenTicks(
+    data.map((d) => d.time),
+    mobile ? Math.ceil(maxTicks / 2) : maxTicks
+  )
+  const max = Math.max(
+    0,
+    ...rows.map((row) => keys.reduce((sum, k) => sum + Number(row[k] ?? 0), 0))
+  )
+  const yTicks = countTicks(max)
   return (
     <ChartContainer
       config={config}
@@ -49,14 +75,15 @@ export function StackedBars({
       <BarChart
         accessibilityLayer
         data={data}
-        margin={{ left: 0, right: 4, top: 8, bottom: 0 }}
+        margin={{ left: 0, right: 20, top: 8, bottom: 0 }}
       >
         <CartesianGrid vertical={false} />
         <XAxis
           dataKey="time"
           tickLine={false}
           axisLine={false}
-          minTickGap={24}
+          ticks={ticks}
+          interval={0}
           tickMargin={8}
           tickFormatter={format}
         />
@@ -65,6 +92,8 @@ export function StackedBars({
           tickLine={false}
           axisLine={false}
           allowDecimals={false}
+          ticks={yTicks}
+          domain={yTicks ? [0, yTicks[yTicks.length - 1]] : [0, "auto"]}
           tickFormatter={chartNumber}
         />
         <ChartTooltip
@@ -165,6 +194,104 @@ export function CategoryBars({
           />
         </Bar>
       </BarChart>
+    </ChartContainer>
+  )
+}
+
+const sparkConfig = { ms: { label: "Latency", color: "var(--chart-1)" } }
+
+/**
+ * Recent latency samples. A failed sample has no latency, so it leaves a gap
+ * in the line and is marked by an orange dot at the neighbouring level.
+ */
+export function LatencySparkline({
+  points,
+  label,
+}: {
+  points: LatencyPoint[]
+  label: string
+}) {
+  const data = points.map((p) => ({ time: epoch(p.time), ms: p.ms }))
+  const measured = data.flatMap((d) => (d.ms === null ? [] : [d.ms]))
+  const failures = data.flatMap((d, i) => {
+    if (d.ms !== null) return []
+    const before = data.slice(0, i).findLast((p) => p.ms !== null)?.ms
+    const after = data.slice(i + 1).find((p) => p.ms !== null)?.ms
+    const level =
+      before != null && after != null
+        ? (before + after) / 2
+        : (before ?? after ?? 0)
+    return [{ time: d.time, level }]
+  })
+  if (measured.length === 0 && failures.length === 0)
+    return (
+      <div role="status" className="h-12 text-sm text-muted-foreground">
+        No samples yet
+      </div>
+    )
+  const description =
+    failures.length > 0
+      ? `${label}, ${failures.length} failed of ${data.length} samples`
+      : label
+  return (
+    <ChartContainer
+      config={sparkConfig}
+      role="img"
+      aria-label={description}
+      className="h-12 w-full"
+    >
+      <AreaChart data={data} margin={{ top: 6, right: 6, bottom: 6, left: 6 }}>
+        <XAxis
+          dataKey="time"
+          type="number"
+          domain={["dataMin", "dataMax"]}
+          hide
+        />
+        <YAxis hide domain={["dataMin", "dataMax"]} />
+        <ChartTooltip
+          content={
+            <ChartTooltipContent
+              hideIndicator
+              labelFormatter={(_, payload) => {
+                const time = Number(payload?.[0]?.payload?.time)
+                return Number.isFinite(time)
+                  ? new Date(time * 1000).toLocaleTimeString(undefined, {
+                      hour: "numeric",
+                      minute: "2-digit",
+                    })
+                  : ""
+              }}
+              formatter={(value) => (
+                <span className="tabular-nums">
+                  {value == null ? "Failed" : formatMs(Number(value))}
+                </span>
+              )}
+            />
+          }
+        />
+        <Area
+          dataKey="ms"
+          type="monotone"
+          stroke="var(--color-ms)"
+          fill="var(--color-ms)"
+          fillOpacity={0.12}
+          strokeWidth={2}
+          connectNulls={false}
+          isAnimationActive={false}
+        />
+        {failures.map((f) => (
+          <ReferenceDot
+            key={f.time}
+            x={f.time}
+            y={f.level}
+            r={3.5}
+            fill="var(--chart-3)"
+            stroke="var(--card)"
+            strokeWidth={1.5}
+            ifOverflow="extendDomain"
+          />
+        ))}
+      </AreaChart>
     </ChartContainer>
   )
 }

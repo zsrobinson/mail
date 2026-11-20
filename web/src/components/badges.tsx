@@ -28,7 +28,11 @@ export function Dot({ tone, className }: { tone: Tone; className?: string }) {
 
 function ToneBadge({ tone, label }: { tone: Tone; label: string }) {
   return (
-    <Badge variant={tone === "bad" ? "destructive" : "outline"}>
+    <Badge
+      variant={tone === "bad" ? "destructive" : "outline"}
+      // Warnings borrow the charts' "Not ok" orange so they stand out in tables.
+      className={tone === "warn" ? "border-chart-3/40" : undefined}
+    >
       <Dot tone={tone} />
       {label}
     </Badge>
@@ -49,7 +53,7 @@ const OUTCOME_TONE: Record<Outcome, Tone> = {
   ok: "good",
   refused: "warn",
   error: "bad",
-  busy: "idle",
+  busy: "warn",
 }
 export function OutcomeBadge({ outcome }: { outcome: Outcome }) {
   return (

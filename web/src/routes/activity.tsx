@@ -223,8 +223,17 @@ function Counts({ row, className }: { row: ActivityRow; className?: string }) {
       className={`flex flex-wrap gap-x-3 text-xs text-muted-foreground tabular-nums ${className ?? ""}`}
     >
       {parts.map(([label, value]) => (
-        <span key={label}>
-          <span className="font-medium text-foreground">
+        <span
+          key={label}
+          className={label === "refused" ? "text-chart-3" : undefined}
+        >
+          <span
+            className={
+              label === "refused"
+                ? "font-medium"
+                : "font-medium text-foreground"
+            }
+          >
             {formatInteger(value)}
           </span>{" "}
           {label}

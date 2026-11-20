@@ -9,7 +9,6 @@ import {
 } from "@zsrobinson/shell"
 import {
   ChartRangeSelect,
-  TrendChart,
   type ChartRangeOption,
 } from "@zsrobinson/shell/blocks/chart-card"
 import { DetailList, DetailRow } from "@zsrobinson/shell/blocks/detail-list"
@@ -26,9 +25,13 @@ import {
 import { Skeleton } from "@zsrobinson/shell/ui/skeleton"
 import { ChevronRightIcon } from "lucide-react"
 import { StateBadge } from "@/components/badges"
-import { CategoryBars, StackedBars } from "@/components/charts"
+import {
+  CategoryBars,
+  LatencySparkline,
+  StackedBars,
+} from "@/components/charts"
 import { Totals } from "@/components/totals"
-import { epoch, formatInteger, formatMs, KIND_LABELS } from "@/lib/format"
+import { formatInteger, formatMs, KIND_LABELS } from "@/lib/format"
 import { overviewQuery } from "@/lib/queries"
 import { RANGES, type Overview, type Range } from "@/lib/types"
 
@@ -59,7 +62,6 @@ const readsConfig = {
   refused: { label: "Refused", color: "var(--chart-3)" },
 }
 const writesConfig = { value: { label: "Messages", color: "var(--chart-1)" } }
-const latencyConfig = { ms: { label: "Login", color: "var(--chart-1)" } }
 
 function OverviewPage() {
   const range = Route.useSearch({ select: (s) => s.range ?? "7d" })
@@ -124,7 +126,7 @@ function OverviewCards({ data }: { data: Overview }) {
             items={[
               ["Total", data.totals.calls],
               ["Not ok", data.totals.errors],
-              ["Writes", data.totals.writes],
+              ["Write calls", data.totals.writes],
             ]}
           />
           <StackedBars
@@ -153,14 +155,24 @@ function OverviewCards({ data }: { data: Overview }) {
               bucketSeconds={data.bucket_seconds}
               label="Message bodies returned and refused per period"
               height="h-44"
+              maxTicks={4}
             />
           </CardContent>
         </Card>
         <Card className="min-w-0">
           <CardHeader>
-            <CardTitle>Writes by kind</CardTitle>
+            <CardTitle>Messages changed</CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-col gap-4">
+            <Totals
+              items={[
+                [
+                  "Messages",
+                  data.writes_by_kind.reduce((sum, w) => sum + w.messages, 0),
+                ],
+                ["Write calls", data.totals.writes],
+              ]}
+            />
             <CategoryBars
               rows={writes}
               config={writesConfig}
@@ -195,15 +207,9 @@ function OverviewCards({ data }: { data: Overview }) {
                 : "Never"}
             </DetailRow>
           </DetailList>
-          <TrendChart
-            data={data.bridge.latency.map((p) => ({
-              time: epoch(p.time),
-              ms: p.ms,
-            }))}
-            config={latencyConfig}
+          <LatencySparkline
+            points={data.bridge.latency}
             label="Recent Bridge login latency"
-            format={(value) => formatMs(value)}
-            sparkline
           />
         </CardContent>
       </Card>

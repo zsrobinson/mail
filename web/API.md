@@ -255,8 +255,10 @@ Returns `{}`.
 ```
 
 - `state` is the worst component state.
-- Health is passive: it reports what real tool calls observed. There are no
-  active probes.
+- Bridge health uses serialized login/NOOP probes and real tool-call login samples.
+  Probes never select a mailbox or fetch a message; they skip busy periods.
+  The other health components use process state or safe ownership/permission checks,
+  without reading the existing action journal.
 - Component `id`s: `bridge` (Bridge login samples from MCP calls), `mcp` (the
   MCP HTTP listener), `action_log` (private, writable journal) and `allowlist`
   (readable store). Unknown ids render with their `name`.
@@ -286,7 +288,7 @@ bundle, and the bundle refuses to start when `MAIL_FIXTURES` is set.
 | `BIND_ADDRESS`     | Listen address, default `127.0.0.1`                                |
 
 Every request, including assets, needs a valid Access assertion. Request logs
-carry only method, route pattern, status and duration.
+carry only a fixed event, outcome and duration.
 
 ## Fixtures
 

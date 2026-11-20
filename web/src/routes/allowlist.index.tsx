@@ -129,7 +129,7 @@ function AllowlistPage() {
         <Empty className="border">
           <EmptyHeader>
             <EmptyTitle>
-              {entries.length ? `Nothing matches “${q}”` : "No senders allowed"}
+              {entries.length ? "No senders match" : "No senders allowed"}
             </EmptyTitle>
           </EmptyHeader>
           <EmptyContent>
