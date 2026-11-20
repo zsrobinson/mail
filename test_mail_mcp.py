@@ -840,3 +840,111 @@ def test_mixed_body_reads_refuse_per_message_before_fetch():
     assert refused['refusal']['code'] == 'sender_not_allowlisted'
     body_fetches = [c for c in client.commands if c[0] == 'FETCH' and 'BODY.PEEK[]' in c[2]]
     assert len(body_fetches) == 1 and body_fetches[0][1] == '1'
+
+
+@pytest.mark.parametrize('name', ['list_messages', 'search_messages'])
+@pytest.mark.parametrize('since,before', [
+    ('2099-01-01', '2099-02-02'),
+    ('1-jAn-2099', '02-FEB-2099'),
+    ('01-Jan-2099', '2-feb-2099'),
+])
+def test_search_date_formats(name, since, before):
+    client = EnvelopeIMAP(count=0)
+    mail.call(name, dict(folder='INBOX', since=since, before=before), factory=lambda: client)
+    search = next(c for c in client.commands if c[0] == 'SEARCH')
+    assert search == ('SEARCH', None, '(SINCE "01-Jan-2099" BEFORE "02-Feb-2099")')
+
+
+@pytest.mark.parametrize('name', ['list_messages', 'search_messages'])
+@pytest.mark.parametrize('args', [
+    {'since': '2099/01/01'}, {'before': '01-Foo-2099'},
+    {'since': '2099-02-29'}, {'since': '2099-1-01'},
+    {'before': '001-Jan-2099'}, {'since': '01-Jan-2099\r\n'},
+    {'since': '0000-01-01'},
+])
+def test_invalid_dates_do_not_connect(name, args, caplog):
+    factory = Mock(side_effect=AssertionError('Must validate before connecting'))
+    with pytest.raises(PublicError, match='since|before') as error:
+        mail.call(name, dict(folder='INBOX', **args), factory=factory)
+    assert 'YYYY-MM-DD' in str(error.value) and 'DD-Mon-YYYY' in str(error.value)
+    factory.assert_not_called()
+    record = json.loads(caplog.records[-1].message.removeprefix('mail_call '))
+    assert record['error_class'] == 'PublicError'
+    assert not any(record['phase'].values())
+
+
+@pytest.mark.parametrize('name', ['list_messages', 'search_messages'])
+def test_reversed_dates_do_not_connect(name):
+    factory = Mock()
+    with pytest.raises(PublicError, match='before must be on or after since'):
+        mail.call(name, dict(folder='INBOX', since='02-Jan-2099', before='2099-01-01'), factory=factory)
+    factory.assert_not_called()
+    mail.validate(name, dict(since='2099-01-01', before='01-Jan-2099'))
+    mail.validate(name, dict(since='', before=''))
+
+
+@pytest.mark.parametrize('name', ['list_messages', 'search_messages', 'read_messages', 'list_folders', 'list_unsubscribe', 'list_actions'])
+@pytest.mark.parametrize('error,expected', [
+    (ValueError, 'ValueError'), (OSError, 'OSError'), (TimeoutError, 'TimeoutError'),
+    (RuntimeError, 'RuntimeError'), (LookupError, 'internal'),
+])
+def test_unexpected_read_errors_keep_safe_error_class(name, error, expected, monkeypatch, caplog):
+    monkeypatch.setattr(mail, '_call', Mock(side_effect=error('private-exception-canary')))
+    args = {'read_messages': {'messages': [{'folder': 'INBOX', 'uid': '1', 'uidvalidity': '1'}]},
+            'list_unsubscribe': {'folder': 'INBOX', 'uids': ['1'], 'uidvalidity': '1'}}.get(name, {})
+    with pytest.raises(error):
+        mail.call(name, args)
+    assert 'private-exception-canary' not in caplog.text
+    record = json.loads(caplog.records[-1].message.removeprefix('mail_call '))
+    assert record['error_class'] == expected
+
+
+def test_date_formats_documented():
+    for tool in mail.TOOLS:
+        if tool['name'] in ('list_messages', 'search_messages'):
+            for description in [tool['description'], *[tool['inputSchema']['properties'][k]['description'] for k in ('since', 'before')]]:
+                assert 'YYYY-MM-DD' in description and 'DD-Mon-YYYY' in description
+
+
+@pytest.mark.parametrize('args,expected', [
+    ({'since': '2099-01-99'}, 'PublicError'),
+    ({}, 'internal'),
+])
+def test_http_read_errors_are_safe_and_classified(args, expected, monkeypatch, caplog):
+    monkeypatch.setattr(mail, '_call', Mock(side_effect=LookupError('private-exception-canary')))
+    server = mail.BoundedHTTPServer(('127.0.0.1', 0), mail.Handler)
+    server.access = None
+    worker = threading.Thread(target=server.serve_forever)
+    worker.start()
+    def local_connection(address, timeout, source_address):
+        assert address == server.server_address
+        sock = socket.socket()
+        sock.settimeout(5)
+        sock.connect(address)
+        return sock
+    connection = http.client.HTTPConnection(*server.server_address)
+    connection._create_connection = local_connection
+    try:
+        body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                           'params': {'name': 'search_messages', 'arguments': args}})
+        connection.request('POST', '/mcp', body, headers={
+            'Host': '127.0.0.1:8766', 'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream'})
+        response = connection.getresponse()
+        assert response.status == 200
+        result = json.loads(response.read())['result']
+        assert result['isError']
+        message = result['content'][0]['text']
+        if expected == 'PublicError':
+            assert 'YYYY-MM-DD' in message and 'DD-Mon-YYYY' in message
+            mail._call.assert_not_called()
+        else:
+            assert message.startswith('Mail operation failed. Check configuration or limits.')
+        assert 'private-exception-canary' not in message + caplog.text
+        record = json.loads(next(r.message.removeprefix('mail_call ') for r in caplog.records if r.message.startswith('mail_call ')))
+        assert record['error_class'] == expected
+    finally:
+        connection.close()
+        server.shutdown()
+        worker.join()
+        server.server_close()
