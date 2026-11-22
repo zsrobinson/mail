@@ -144,8 +144,13 @@ function apiFilters(search: ActivitySearch, minute: number): ActivityFilters {
     const preset = PRESETS.find(
       (p) => p.value === (search.range ?? DEFAULT_PRESET)
     )!
-    if (preset.days)
-      from = new Date(minute - preset.days * 86_400_000).toISOString()
+    // A day range is whole calendar days ending today, like the Overview
+    // charts; the last 24 hours stays a rolling window.
+    if (preset.days === 1) from = new Date(minute - 86_400_000).toISOString()
+    else if (preset.days)
+      from = fromCalendarDate(
+        addDays(1 - preset.days, new Date(minute))
+      ).toISOString()
   }
   return {
     q: search.q,

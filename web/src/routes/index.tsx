@@ -319,12 +319,14 @@ function OverviewCards({ data, range }: { data: Overview; range: Range }) {
               <DonutChart
                 label="Refused message bodies by reason"
                 totalLabel="Refused"
-                data={REFUSAL_REASONS.map((reason) => ({
-                  key: reason,
-                  label: REFUSAL_LABELS[reason],
-                  value: t.refusals[reason],
-                  color: REASON_COLORS[reason],
-                }))}
+                data={REFUSAL_REASONS.filter((r) => t.refusals[r] > 0).map(
+                  (reason) => ({
+                    key: reason,
+                    label: REFUSAL_LABELS[reason],
+                    value: t.refusals[reason],
+                    color: REASON_COLORS[reason],
+                  })
+                )}
               />
             )}
           </CardContent>

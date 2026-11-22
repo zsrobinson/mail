@@ -324,7 +324,11 @@ function seedAllowlist(now: number) {
     ([address, note, expiry, addedDaysAgo, weight]) => {
       const id = uuid(next)
       const added = today - addedDaysAgo * DAY + 15 * HOUR
-      const expires = expiry === null ? null : today + expiry * DAY - 1000
+      // Like the form: the end of a local calendar day.
+      const end = new Date(now)
+      end.setDate(end.getDate() + (expiry ?? 0))
+      end.setHours(23, 59, 59, 0)
+      const expires = expiry === null ? null : end.getTime()
       const matches = Array.from({ length: MATCH_DAYS }, (_, i) => {
         const date = today - (MATCH_DAYS - 1 - i) * DAY
         const active =
