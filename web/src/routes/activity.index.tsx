@@ -437,7 +437,10 @@ function ActivityPage() {
               ) : null}
             </Empty>
           ) : (
-            <Card className="gap-0 overflow-clip py-0">
+            <Card
+              aria-busy={activity.isPlaceholderData}
+              className={`gap-0 overflow-clip py-0 transition-opacity ${activity.isPlaceholderData ? "opacity-60" : ""}`}
+            >
               <DayGroups rows={data.rows} />
               {pages > 1 ? (
                 <CardFooter className="justify-between gap-2 border-t py-3">
