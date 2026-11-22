@@ -1,6 +1,7 @@
 """One metadata-only record per call; daily rotation with 366-day retention."""
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import math
 import os
@@ -8,6 +9,7 @@ import re
 from pathlib import Path
 import stat
 import threading
+from uuid import uuid4
 
 TOOLS = frozenset(('list_folders', 'list_messages', 'search_messages', 'list_unsubscribe', 'read_messages', 'create_draft', 'archive_messages', 'move_messages', 'add_labels', 'mark_read', 'list_actions', 'unarchive_messages'))
 REASONS = ('sender_not_allowlisted', 'sender_not_verified')
@@ -53,7 +55,7 @@ class Activity:
             counts['drafts'] = int(tool == 'create_draft' and result.get('saved') is True)
         outcome = 'refused' if any(counts['refused'].values()) else 'busy' if telemetry.get('error_class') == 'busy' else 'ok' if telemetry['outcome'] == 'ok' else 'error'
         action_id = result.get('action_id') or telemetry.get('action_id')
-        row = dict(time=telemetry['ts'], tool=tool, outcome=outcome, counts=counts,
+        row = dict(id=uuid4().hex, time=telemetry['ts'], tool=tool, outcome=outcome, counts=counts,
                    duration_ms=telemetry['total_ms'], login_ms=telemetry['phase']['login'],
                    connected=telemetry.get('bridge_ok', False),
                    error_class=telemetry['error_class'] if telemetry['error_class'] in ERRORS else None,
@@ -103,6 +105,9 @@ class Activity:
                             try:
                                 row = json.loads(line)
                                 if row['time'] >= cutoff:
+                                    # Older records predate call ids; derive a stable one.
+                                    if not isinstance(row.get('id'), str) or not re.fullmatch(r'[a-f0-9]{32}', row['id']):
+                                        row['id'] = hashlib.sha256(line.rstrip('\n').encode()).hexdigest()[:32]
                                     rows.append(row)
                             except (ValueError, KeyError, TypeError):
                                 continue
