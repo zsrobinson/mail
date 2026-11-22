@@ -30,6 +30,7 @@ import {
 } from "@zsrobinson/shell/ui/card"
 import { Skeleton } from "@zsrobinson/shell/ui/skeleton"
 import { Spinner } from "@zsrobinson/shell/ui/spinner"
+import { ToggleGroup, ToggleGroupItem } from "@zsrobinson/shell/ui/toggle-group"
 import { CalendarClockIcon, Trash2Icon } from "lucide-react"
 import { EntryStateBadge } from "@/components/badges"
 import {
@@ -45,6 +46,7 @@ import {
   CHANGE_LABELS,
   entryState,
   formatDate,
+  formatExpiry,
   formatInteger,
 } from "@/lib/format"
 import {
@@ -74,7 +76,7 @@ function EntryPage() {
   useEffect(() => {
     if (focus !== "expiry" || !loaded) return
     const target =
-      document.querySelector<HTMLElement>("[data-renew-primary]") ??
+      document.querySelector<HTMLElement>("[data-renew-first]") ??
       document.querySelector<HTMLElement>('[id$="-until"]')
     target?.scrollIntoView({ block: "center" })
     target?.focus({ preventScroll: true })
@@ -118,7 +120,7 @@ function EntryPage() {
             <span>Added {formatDate(entry.added_at)}</span>
             <span>
               {entry.expires_at
-                ? `${state === "expired" ? "Ended" : "Until"} ${formatDateTime(entry.expires_at)}`
+                ? `${state === "expired" ? "Ended" : "Until"} ${formatExpiry(entry.expires_at)}`
                 : "No end date"}
             </span>
           </PageMeta>
@@ -139,11 +141,50 @@ function EntryPage() {
   )
 }
 
-/** Extend an entry that is about to end, or renew one that has. */
+/**
+ * Extend an entry that is about to end, or renew one that has: pick a new
+ * end, then confirm with a button that names it. The toast can undo it.
+ */
 function RenewCard({ entry }: { entry: AllowlistEntry }) {
   const update = useUpdateSender(entry.id)
   const expired = entryState(entry.expires_at) === "expired"
+  const presets = EXPIRY_PRESETS()
   const [choice, setChoice] = useState<string | null>(null)
+  const picked = presets.find((p) => p.label === choice)
+  const verb = expired ? "Renew" : "Extend"
+  const result = picked
+    ? picked.value
+      ? `${verb} to ${formatCalendarDate(picked.value)}`
+      : "Remove the end date"
+    : `${verb} access`
+  const previous = entry.expires_at
+  const apply = () => {
+    if (!picked) return
+    update.mutate(
+      { expires_at: expiryFromDate(picked.value) ?? null, quiet: true },
+      {
+        onSuccess: () => {
+          setChoice(null)
+          toast.success(
+            picked.value
+              ? `Allowed until ${formatCalendarDate(picked.value)}`
+              : "Allowed with no end date",
+            {
+              duration: 10_000,
+              action: {
+                label: "Undo",
+                onClick: () =>
+                  update.mutate({
+                    expires_at: previous,
+                    success: `End date restored to ${formatExpiry(previous!)}`,
+                  }),
+              },
+            }
+          )
+        },
+      }
+    )
+  }
   return (
     <Card>
       <CardHeader>
@@ -156,43 +197,47 @@ function RenewCard({ entry }: { entry: AllowlistEntry }) {
         <p>
           {expired ? "Access ended" : "Access ends"}{" "}
           {formatRelative(entry.expires_at!)}, on{" "}
-          {formatDateTime(entry.expires_at!)}.{" "}
+          {formatExpiry(entry.expires_at!)}.{" "}
           {expired
             ? "Bodies from this sender are refused until it is renewed."
             : "After that, bodies from this sender are refused."}
         </p>
-        <div className="flex flex-wrap gap-2">
-          {EXPIRY_PRESETS().map((preset) => (
-            <Button
-              key={preset.label}
-              variant={preset.label === "30 days" ? "default" : "outline"}
-              data-renew-primary={preset.label === "30 days" ? "" : undefined}
-              size="sm"
-              disabled={update.isPending}
-              onClick={() => {
-                setChoice(preset.label)
-                update.mutate({
-                  expires_at: expiryFromDate(preset.value) ?? null,
-                  success: preset.value
-                    ? `Allowed until ${formatCalendarDate(preset.value)}`
-                    : "Allowed with no end date",
-                })
-              }}
-            >
-              {update.isPending && choice === preset.label ? (
-                <Spinner data-icon="inline-start" />
-              ) : null}
-              {preset.value
-                ? `${preset.label} · ${formatCalendarDate(preset.value)}`
-                : preset.label}
-            </Button>
-          ))}
+        <div className="flex flex-col gap-1.5">
+          <span id="renew-label" className="text-xs text-muted-foreground">
+            New end
+          </span>
+          <ToggleGroup
+            aria-labelledby="renew-label"
+            variant="outline"
+            size="sm"
+            className="flex-wrap"
+            value={choice ? [choice] : []}
+            onValueChange={(next) => setChoice((next as string[])[0] ?? null)}
+          >
+            {presets.map((preset, index) => (
+              <ToggleGroupItem
+                key={preset.label}
+                value={preset.label}
+                data-renew-first={index === 0 ? "" : undefined}
+              >
+                {preset.value
+                  ? `${preset.label} · ${formatCalendarDate(preset.value)}`
+                  : preset.label}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
         </div>
         <p className="text-xs text-muted-foreground">
-          New end times are {endOfDayLabel(EXPIRY_PRESETS()[0].value)} on the
-          chosen day. Pick any other date under Edit.
+          The new end is {endOfDayLabel(presets[0].value)} on that day. Pick any
+          other date under Edit.
         </p>
       </CardContent>
+      <CardFooter>
+        <Button disabled={!picked || update.isPending} onClick={apply}>
+          {update.isPending ? <Spinner data-icon="inline-start" /> : null}
+          {result}
+        </Button>
+      </CardFooter>
     </Card>
   )
 }

@@ -284,3 +284,22 @@ export const OUTCOME_SERIES = {
   refused: { label: "Refused", color: "var(--chart-3)" },
   error: { label: "Failed", color: "var(--destructive)" },
 }
+
+const expiryDate = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" })
+const expiryDateTime = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+})
+
+/**
+ * An expiry as the viewer reads it: just the date when it ends at the close of
+ * that day (11:59 PM local, as the form sets it), otherwise date and time.
+ */
+export function formatExpiry(iso: string) {
+  const time = Date.parse(iso)
+  if (Number.isNaN(time)) return "—"
+  const date = new Date(time)
+  return date.getHours() === 23 && date.getMinutes() === 59
+    ? expiryDate.format(date)
+    : expiryDateTime.format(date)
+}

@@ -27,9 +27,12 @@ export function useAddSender() {
 export function useUpdateSender(id: string) {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: (input: Partial<AllowlistInput> & { success?: string }) => {
-      const { success: _success, ...body } = input
+    mutationFn: (
+      input: Partial<AllowlistInput> & { success?: string; quiet?: boolean }
+    ) => {
+      const { success: _success, quiet: _quiet, ...body } = input
       void _success
+      void _quiet
       return sendJson<{ entry: AllowlistEntry }>(
         "PATCH",
         `/api/allowlist/${encodeURIComponent(id)}`,
@@ -37,7 +40,7 @@ export function useUpdateSender(id: string) {
       )
     },
     onSuccess: (_, input) => {
-      toast.success(input.success ?? "Changes saved")
+      if (!input.quiet) toast.success(input.success ?? "Changes saved")
       void client.invalidateQueries({ queryKey: ["overview"] })
       return client.invalidateQueries({ queryKey: ["allowlist"] })
     },
