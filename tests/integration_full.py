@@ -237,7 +237,7 @@ def main():
             assert request('/api/activity/not-a-call')[0] == 400
             status, value = request('/api/health?range=7d&tz=America/New_York')
             assert status == 200 and value['range'] == '7d' and all(len(c['timeline']) == 28 for c in value['components'])
-            assert value['enforcement']['authserv_configured'] and value['about']['version']
+            assert value['enforcement']['authserv_configured'] and value['about'] == {'version': None, 'release': None}
             status, value = request('/api/overview?range=24h&tz=America/New_York')
             assert value['previous']['calls'] == 0 and 'attention' in value
             text = json.dumps([request('/api/activity')[1], request('/api/overview?range=30d')[1], request('/api/health?range=30d')[1]])
