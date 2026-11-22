@@ -36,18 +36,62 @@ export type State = "ok" | "degraded" | "down" | "unknown"
 
 export type LatencyPoint = { time: string; ms: number | null }
 
+export const REFUSAL_REASONS = [
+  "sender_not_allowlisted",
+  "sender_not_verified",
+] as const
+export type RefusalReason = (typeof REFUSAL_REASONS)[number]
+
+export type PeriodTotals = {
+  calls: number
+  /** Every call that did not succeed: refused, failed or busy. */
+  errors: number
+  refused_calls: number
+  /** Failed or busy calls. */
+  failed: number
+  body_reads_allowed: number
+  body_reads_refused: number
+  writes: number
+  messages_changed: number
+  refusals: Record<RefusalReason, number>
+}
+
+export type EntryState = "active" | "expiring" | "expired"
+
+export type AttentionItem = {
+  kind:
+    | "allowlist_unavailable"
+    | "authserv_missing"
+    | "audit_refuses_all"
+    | "bridge"
+    | "refusal_spike"
+    | "expiring"
+    | "expired"
+    | (string & {})
+  severity: "critical" | "warning" | "info"
+  state?: State
+  time?: string | null
+  count?: number
+  previous?: number
+  entry_id?: string
+  address?: string
+}
+
 export type Overview = {
   range: Range
   generated_at: string
   bucket_seconds: number
-  totals: {
-    calls: number
-    errors: number
-    body_reads_allowed: number
-    body_reads_refused: number
-    writes: number
-  }
-  calls: { start: string; ok: number; error: number }[]
+  period: { start: string; end: string; previous_start: string }
+  totals: PeriodTotals
+  previous: PeriodTotals
+  top_senders: {
+    id: string
+    address: string
+    matches: number
+    state: EntryState
+  }[]
+  attention: AttentionItem[]
+  calls: { start: string; ok: number; refused: number; error: number }[]
   body_reads: { start: string; allowed: number; refused: number }[]
   writes_by_kind: { kind: WriteKind; calls: number; messages: number }[]
   bridge: {
@@ -70,17 +114,49 @@ export type ActivityCounts = {
 }
 
 export type ActivityRow = {
+  /** Opaque call id: 32 lower-case hex characters. */
+  id: string
   time: string
   tool: Tool
   outcome: Outcome
   duration_ms: number
   login_ms: number | null
+  connected?: boolean
   error_class: string | null
   action_id: string | null
+  dry_run?: boolean
+  source_action_id?: string | null
+  chunks?: { index: number; size: number; status: ActionStatus }[]
   counts: ActivityCounts
 }
 
-export type Activity = { rows: ActivityRow[]; truncated: boolean }
+export type ActivitySeriesPoint = {
+  start: string
+  ok: number
+  refused: number
+  error: number
+}
+
+export type Activity = {
+  rows: ActivityRow[]
+  total: number
+  offset: number
+  limit: number
+  truncated: boolean
+  series: { bucket_seconds: number; points: ActivitySeriesPoint[] }
+}
+
+export type ActivityFilters = {
+  q?: string
+  from?: string
+  to?: string
+  tools?: Tool[]
+  outcomes?: Outcome[]
+  refusals?: boolean
+  offset?: number
+  limit?: number
+  tz?: string
+}
 
 export type ActionStatus =
   "completed" | "partial" | "uncertain" | "failed" | "dry_run"
@@ -101,12 +177,16 @@ export type Action = {
   status: ActionStatus
   counts: ActionCounts
   chunks: { index: number; size: number; status: ActionStatus }[]
+  call_id?: string | null
+  source_action_id?: string | null
   unarchive?: {
     eligible: boolean
     reason: string | null
     restored_by: string | null
   }
 }
+
+export type CallDetail = { call: ActivityRow; action: Action | null }
 
 export type UnarchivePreview = {
   dry_run: true
@@ -156,6 +236,43 @@ export type AllowlistInput = {
   expires_at: string | null
 }
 
+export type TimelinePoint = {
+  start: string
+  state: State
+  ok: number
+  failed: number
+}
+
+export type Incident = {
+  component: string
+  error_class: string
+  count: number
+  started_at: string
+  ended_at: string
+}
+
+export type AuditCounts = {
+  scanned: number
+  candidates: number
+  allowlisted_sender: number
+  authenticated_allowlisted: number
+  unverified_allowlisted: number
+  with_authentication_results: number
+  with_trusted_topmost: number
+}
+
+export type Enforcement = {
+  authserv_configured: boolean
+  store_ok: boolean
+  audit: { time: string; counts: AuditCounts } | null
+}
+
+export type About = {
+  /** From the pinned release the installer recorded; null when unknown. */
+  version: string | null
+  release: { tag: string; commit: string } | null
+}
+
 export type HealthComponent = {
   id: string
   name: string
@@ -170,12 +287,24 @@ export type HealthComponent = {
   last_success_at: string | null
   last_error_at: string | null
   error_class: string | null
+  timeline: TimelinePoint[]
 }
 
 export type Health = {
   checked_at: string
   state: State
+  range: Range
+  bucket_seconds: number
   components: HealthComponent[]
+  incidents: Incident[]
+  enforcement: Enforcement
+  about: About
 }
 
-export type Session = { email: string; services: unknown[] }
+export type ServiceLink = {
+  name: string
+  url: string
+  icon?: string
+  colour?: string
+}
+export type Session = { email: string; services: ServiceLink[] }

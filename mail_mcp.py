@@ -1255,6 +1255,11 @@ def start_health_monitor(server):
             if server.mail_slot.acquire(blocking=False):
                 try:
                     row = probe_bridge()
+                    try:
+                        from core_api import component_checks
+                        row['checks'] = component_checks(sender_policy())
+                    except Exception:
+                        pass
                     activity_log().health_store.append(row)
                 except Exception:
                     logging.warning('mail_health_unavailable')

@@ -94,6 +94,10 @@ def check_history(rows):
         timestamp(row['time'])
 
 
+# Removed entries are kept, with their history, so a removal can be undone.
+REMOVED_KEPT = 100
+
+
 class Allowlist:
     def __init__(self, filename):
         self.path = Path(filename)
@@ -144,6 +148,14 @@ class Allowlist:
                 if not isinstance(row, dict) or set(row) != {'date', 'count'} or type(row['count']) is not int or row['count'] < 0 or not isinstance(row['date'], str) or date.fromisoformat(row['date']).isoformat() != row['date'] or row['date'] <= previous:
                     raise ValueError('Invalid match history')
                 previous = row['date']
+        removed = data.get('removed', [])
+        if not isinstance(removed, list) or len(removed) > REMOVED_KEPT:
+            raise ValueError('Invalid removed entries')
+        for entry in removed:
+            if not isinstance(entry, dict) or address(entry.get('address')) != entry['address'] or not isinstance(entry.get('id'), str) or not re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', entry['id']):
+                raise ValueError('Invalid removed entry')
+            timestamp(entry['removed_at'])
+            check_history(entry.get('edit_history', []))
         self.cached, self.stamp = data, stamp
         return data
 
@@ -182,6 +194,7 @@ class Allowlist:
             item = next((e for e in data['entries'] if e['id'] == ident), None)
             if ident and not item:
                 raise KeyError('Entry not found')
+            before = dict(item) if item else None
             if remove:
                 data['entries'].remove(item)
             else:
@@ -197,12 +210,43 @@ class Allowlist:
                 if sum(e['address'] == item['address'] for e in data['entries']) != 1:
                     raise ValueError('Address already exists')
             # Edit history deliberately contains time and operation only.
-            event = {'time': now(), 'change': 'removed' if remove else 'updated' if ident else 'added'}
-            data['history'].append(event)
-            if not remove:
-                item.setdefault('edit_history', []).append(event)
-                item['edit_history'] = item['edit_history'][-1000:]
+            time = now()
+            if remove:
+                kinds = ['removed']
+            elif before is None:
+                kinds = ['added']
+            else:
+                kinds = [kind for field, kind in (('address', 'address_changed'), ('note', 'note_changed'), ('expires_at', 'expiry_changed'))
+                         if (before.get(field) or None) != (item.get(field) or None)] or ['updated']
+            events = [{'time': time, 'change': kind} for kind in kinds]
+            data['history'].extend(events)
+            target = before if remove else item
+            target.setdefault('edit_history', []).extend(events)
+            target['edit_history'] = target['edit_history'][-1000:]
+            if remove:
+                target['removed_at'] = time
+                data['removed'] = [e for e in data.get('removed', []) if e['id'] != target['id']][-(REMOVED_KEPT - 1):] + [target]
             data['history'] = data['history'][-10000:]
+            self._save(data)
+            return item
+
+    def restore(self, ident):
+        """Undo a removal: the same entry returns with its matches and history."""
+        with self.lock:
+            data = self.list()
+            removed = data.get('removed', [])
+            item = next((e for e in removed if e['id'] == ident), None)
+            if item is None:
+                raise KeyError('Entry not found')
+            if any(e['address'] == item['address'] or e['id'] == ident for e in data['entries']):
+                raise ValueError('Address already exists')
+            data['removed'] = [e for e in removed if e['id'] != ident]
+            item.pop('removed_at', None)
+            # 'added' keeps the history vocabulary readable by earlier releases.
+            event = {'time': now(), 'change': 'added'}
+            data['history'].append(event)
+            item.setdefault('edit_history', []).append(event)
+            data['entries'].append(item)
             self._save(data)
             return item
 

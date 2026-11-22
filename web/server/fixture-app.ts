@@ -29,7 +29,10 @@ export function createFixtureApp(now = () => Date.now()) {
   app.get("/api/session", (c) =>
     c.json({
       email: "operator@example.org",
-      services: [{ name: "Mail", url: "/", colour: "cy" }],
+      services: [
+        { name: "Mail", url: "/", colour: "cy" },
+        { name: "Grafana", url: "https://grafana.example.org", icon: "G" },
+      ],
     })
   )
   registerMailRoutes(app, createFixtures(now).forward)

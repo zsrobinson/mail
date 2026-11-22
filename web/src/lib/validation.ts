@@ -1,7 +1,19 @@
 /** Input rules shared by the forms and the server proxy. */
 import type { AllowlistInput } from "./types.ts"
+import { OUTCOMES, TOOLS } from "./types.ts"
+import {
+  endOfCalendarDay,
+  isCalendarDate,
+  toCalendarDate,
+} from "@zsrobinson/shell/lib/calendar-date"
 
 export const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+export const CALL_ID_PATTERN = /^[a-f0-9]{32}$/
+/** IANA zone names such as America/New_York; the core falls back to UTC. */
+export const ZONE_PATTERN =
+  /^[A-Za-z0-9_+-]{1,32}(?:\/[A-Za-z0-9_+-]{1,32}){0,2}$/
+export const SEARCH_MAX = 200
+export const PAGE_MAX = 200
 export const TOKEN_PATTERN = /^[A-Za-z0-9._~-]{1,512}$/
 export const NOTE_MAX = 1000
 export const ADDRESS_MAX = 254
@@ -35,16 +47,21 @@ export function noteError(value: string) {
     : null
 }
 
-/** A date input value (YYYY-MM-DD) becomes the end of that UTC day. */
+/**
+ * A picked calendar date (YYYY-MM-DD) becomes the end of that day in the
+ * viewer's own time zone, as an ISO instant.
+ */
 export function expiryFromDate(date: string) {
   if (!date) return null
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return undefined
-  const time = Date.parse(`${date}T23:59:59Z`)
-  return Number.isNaN(time) ? undefined : new Date(time).toISOString()
+  if (!isCalendarDate(date)) return undefined
+  return endOfCalendarDay(date)
 }
 
+/** The viewer's calendar day an expiry falls on. */
 export function dateFromExpiry(iso: string | null) {
-  return iso ? iso.slice(0, 10) : ""
+  if (!iso) return ""
+  const time = Date.parse(iso)
+  return Number.isNaN(time) ? "" : toCalendarDate(new Date(time))
 }
 
 export function expiryError(iso: string | null | undefined, now = Date.now()) {
@@ -118,4 +135,53 @@ export function parseUnarchiveBody(body: unknown): Parsed<UnarchiveBody> {
       value: { dry_run: false, preview_token: input.preview_token },
     }
   return { ok: false, error: "Preview the unarchive before confirming it" }
+}
+
+/**
+ * The activity query the browser may send, rebuilt from checked values only:
+ * the core never sees a parameter the web server did not validate.
+ */
+export function parseActivityQuery(
+  input: URLSearchParams
+): Parsed<URLSearchParams> {
+  const out = new URLSearchParams()
+  const q = input.get("q") ?? ""
+  if (q.length > SEARCH_MAX) return { ok: false, error: "Search is too long" }
+  if (q.trim()) out.set("q", q.trim())
+  for (const key of ["from", "to"] as const) {
+    const value = input.get(key)
+    if (!value) continue
+    if (!isIsoTime(value)) return { ok: false, error: `${key} must be a time` }
+    out.set(key, new Date(value).toISOString())
+  }
+  const tools = (input.get("tool") ?? "").split(",").filter(Boolean)
+  if (tools.some((t) => t !== "unknown" && !TOOLS.includes(t as never)))
+    return { ok: false, error: "Unknown tool" }
+  if (tools.length) out.set("tool", [...new Set(tools)].join(","))
+  const outcomes = (input.get("outcome") ?? "").split(",").filter(Boolean)
+  if (outcomes.some((o) => !OUTCOMES.includes(o as never)))
+    return { ok: false, error: "Unknown outcome" }
+  if (outcomes.length) out.set("outcome", [...new Set(outcomes)].join(","))
+  const refusals = input.get("refusals")
+  if (refusals && refusals !== "1")
+    return { ok: false, error: "refusals must be 1" }
+  if (refusals) out.set("refusals", "1")
+  for (const [key, max] of [
+    ["offset", 1_000_000],
+    ["limit", PAGE_MAX],
+  ] as const) {
+    const value = input.get(key)
+    if (value === null || value === "") continue
+    if (!/^\d{1,7}$/.test(value) || Number(value) > max)
+      return { ok: false, error: `${key} is out of range` }
+    if (key === "limit" && Number(value) < 1)
+      return { ok: false, error: "limit is out of range" }
+    out.set(key, String(Number(value)))
+  }
+  const tz = input.get("tz")
+  if (tz) {
+    if (!ZONE_PATTERN.test(tz)) return { ok: false, error: "Unknown time zone" }
+    out.set("tz", tz)
+  }
+  return { ok: true, value: out }
 }

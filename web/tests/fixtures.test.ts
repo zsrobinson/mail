@@ -48,7 +48,7 @@ describe("fixtures", () => {
     const call = client()
     for (const [range, points, seconds] of [
       ["24h", 24, 3600],
-      ["7d", 28, 21600],
+      ["7d", 7, 86400],
       ["30d", 30, 86400],
     ] as const) {
       const { body } = await call<Overview>(
@@ -61,7 +61,7 @@ describe("fixtures", () => {
       assert.equal(body.writes_by_kind.length, 6)
       assert.equal(
         body.totals.calls,
-        body.calls.reduce((sum, c) => sum + c.ok + c.error, 0)
+        body.calls.reduce((sum, c) => sum + c.ok + c.refused + c.error, 0)
       )
     }
   })

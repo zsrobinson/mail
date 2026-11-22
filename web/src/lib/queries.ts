@@ -1,16 +1,17 @@
-import { queryOptions } from "@tanstack/react-query"
+import { keepPreviousData, queryOptions } from "@tanstack/react-query"
+import { viewerTimeZone } from "@zsrobinson/shell/lib/calendar-date"
 import { getJson } from "./api"
 import type {
   Action,
   Activity,
+  ActivityFilters,
   Allowlist,
   AllowlistDetail,
+  CallDetail,
   Health,
-  Outcome,
   Overview,
   Range,
   Session,
-  Tool,
 } from "./types"
 
 const LIVE = 30_000
@@ -22,28 +23,47 @@ export const sessionQuery = queryOptions({
   staleTime: 5 * 60_000,
 })
 
+const zoned = (range: Range) =>
+  new URLSearchParams({ range, tz: viewerTimeZone() })
+
 export const overviewQuery = (range: Range) =>
   queryOptions({
     queryKey: ["overview", range],
     queryFn: ({ signal }) =>
-      getJson<Overview>(`/api/overview?range=${range}`, signal),
+      getJson<Overview>(`/api/overview?${zoned(range)}`, signal),
     refetchInterval: LIVE,
-    placeholderData: (previous) => previous,
+    placeholderData: keepPreviousData,
   })
 
-export const activityQuery = (filters: { tool?: Tool; outcome?: Outcome }) =>
+export function activityParams(filters: ActivityFilters) {
+  const params = new URLSearchParams()
+  if (filters.q?.trim()) params.set("q", filters.q.trim())
+  if (filters.from) params.set("from", filters.from)
+  if (filters.to) params.set("to", filters.to)
+  if (filters.tools?.length) params.set("tool", filters.tools.join(","))
+  if (filters.outcomes?.length)
+    params.set("outcome", filters.outcomes.join(","))
+  if (filters.refusals) params.set("refusals", "1")
+  if (filters.offset) params.set("offset", String(filters.offset))
+  if (filters.limit) params.set("limit", String(filters.limit))
+  params.set("tz", filters.tz ?? viewerTimeZone())
+  return params
+}
+
+export const activityQuery = (filters: ActivityFilters) =>
   queryOptions({
-    queryKey: ["activity", filters.tool ?? "", filters.outcome ?? ""],
+    queryKey: ["activity", activityParams(filters).toString()],
     queryFn: ({ signal }) =>
-      getJson<Activity>(
-        `/api/activity?${new URLSearchParams({
-          tool: filters.tool ?? "",
-          outcome: filters.outcome ?? "",
-        })}`,
-        signal
-      ),
+      getJson<Activity>(`/api/activity?${activityParams(filters)}`, signal),
     refetchInterval: LIVE,
-    placeholderData: (previous) => previous,
+    placeholderData: keepPreviousData,
+  })
+
+export const callQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["call", id],
+    queryFn: ({ signal }) =>
+      getJson<CallDetail>(`/api/activity/${encodeURIComponent(id)}`, signal),
   })
 
 export const actionQuery = (id: string) =>
@@ -68,8 +88,36 @@ export const allowlistEntryQuery = (id: string) =>
       ),
   })
 
-export const healthQuery = queryOptions({
-  queryKey: ["health"],
-  queryFn: ({ signal }) => getJson<Health>("/api/health", signal),
-  refetchInterval: LIVE,
+export const healthQuery = (range: Range) =>
+  queryOptions({
+    queryKey: ["health", range],
+    queryFn: ({ signal }) =>
+      getJson<Health>(`/api/health?${zoned(range)}`, signal),
+    refetchInterval: LIVE,
+    placeholderData: keepPreviousData,
+  })
+
+/** Recent write actions for the command palette: newest first, ids only. */
+export const recentWritesQuery = queryOptions({
+  queryKey: [
+    "activity",
+    "palette",
+    "archive_messages,unarchive_messages,move_messages,add_labels,mark_read,create_draft",
+  ],
+  queryFn: ({ signal }) =>
+    getJson<Activity>(
+      `/api/activity?${activityParams({
+        tools: [
+          "archive_messages",
+          "unarchive_messages",
+          "move_messages",
+          "add_labels",
+          "mark_read",
+          "create_draft",
+        ],
+        limit: 100,
+      })}`,
+      signal
+    ),
+  staleTime: 60_000,
 })

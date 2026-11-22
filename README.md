@@ -171,6 +171,9 @@ manage entries in the web app. There is no MCP allowlist tool. Configure
 default is empty and never authorizes a body read. Strict alignment can conservatively
 refuse a sender; `auth_audit.py` produces aggregate-only header coverage counts
 when deliberately run with the service account and its existing credential.
+Set `MAIL_AUTH_AUDIT_RESULT` (for both the audit and the core) to a file in a
+service-owned mode-0700 directory to keep the latest counts, with their time and
+nothing else, for the web app's Health page.
 
 The private web API binds only the Unix socket in `MAIL_CORE_SOCKET`. Use a
 service-owned, group-traversable setgid directory and a separate web service user;
@@ -186,7 +189,9 @@ a year of retention. It records fixed tool/outcome/error classes, counts, durati
 and write action ids, never mail content, addresses, folders or UIDs. New legacy
 journal records also omit subjects and addresses; historical action records are
 not imported into web activity. `MAIL_HEALTH` optionally selects the private
-probe-history path. Serialized probes perform login and NOOP only and skip a busy
+probe-history path, which also records the action-log and allowlist checks for
+the Health timeline. An installer may write `release.json` beside the core,
+`{"tag": "vX.Y.Z", "commit": "<40 hex>"}`, so Health shows the pinned release. Serialized probes perform login and NOOP only and skip a busy
 core; they never select or read a message. `MAIL_METRICS_PORT` optionally enables
 a loopback aggregate-only Prometheus listener, separate from the private API.
 

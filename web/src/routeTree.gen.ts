@@ -14,6 +14,8 @@ import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as AllowlistRouteImport } from './routes/allowlist'
 import { Route as HealthRouteImport } from './routes/health'
 import { Route as ActionsIdRouteImport } from './routes/actions.$id'
+import { Route as ActivityIndexRouteImport } from './routes/activity.index'
+import { Route as ActivityIdRouteImport } from './routes/activity.$id'
 import { Route as AllowlistIndexRouteImport } from './routes/allowlist.index'
 import { Route as AllowlistIdRouteImport } from './routes/allowlist.$id'
 import { Route as AllowlistNewRouteImport } from './routes/allowlist.new'
@@ -43,6 +45,16 @@ const ActionsIdRoute = ActionsIdRouteImport.update({
   path: '/actions/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ActivityIndexRoute = ActivityIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ActivityRoute,
+} as any)
+const ActivityIdRoute = ActivityIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ActivityRoute,
+} as any)
 const AllowlistIndexRoute = AllowlistIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -61,32 +73,37 @@ const AllowlistNewRoute = AllowlistNewRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/activity': typeof ActivityRoute
+  '/activity': typeof ActivityRouteWithChildren
   '/allowlist': typeof AllowlistRouteWithChildren
   '/health': typeof HealthRoute
   '/actions/$id': typeof ActionsIdRoute
+  '/activity/$id': typeof ActivityIdRoute
   '/allowlist/$id': typeof AllowlistIdRoute
   '/allowlist/new': typeof AllowlistNewRoute
+  '/activity/': typeof ActivityIndexRoute
   '/allowlist/': typeof AllowlistIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/activity': typeof ActivityRoute
   '/health': typeof HealthRoute
   '/actions/$id': typeof ActionsIdRoute
+  '/activity/$id': typeof ActivityIdRoute
   '/allowlist/$id': typeof AllowlistIdRoute
   '/allowlist/new': typeof AllowlistNewRoute
+  '/activity': typeof ActivityIndexRoute
   '/allowlist': typeof AllowlistIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/activity': typeof ActivityRoute
+  '/activity': typeof ActivityRouteWithChildren
   '/allowlist': typeof AllowlistRouteWithChildren
   '/health': typeof HealthRoute
   '/actions/$id': typeof ActionsIdRoute
+  '/activity/$id': typeof ActivityIdRoute
   '/allowlist/$id': typeof AllowlistIdRoute
   '/allowlist/new': typeof AllowlistNewRoute
+  '/activity/': typeof ActivityIndexRoute
   '/allowlist/': typeof AllowlistIndexRoute
 }
 export interface FileRouteTypes {
@@ -97,17 +114,20 @@ export interface FileRouteTypes {
     | '/allowlist'
     | '/health'
     | '/actions/$id'
+    | '/activity/$id'
     | '/allowlist/$id'
     | '/allowlist/new'
+    | '/activity/'
     | '/allowlist/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/activity'
     | '/health'
     | '/actions/$id'
+    | '/activity/$id'
     | '/allowlist/$id'
     | '/allowlist/new'
+    | '/activity'
     | '/allowlist'
   id:
     | '__root__'
@@ -116,14 +136,16 @@ export interface FileRouteTypes {
     | '/allowlist'
     | '/health'
     | '/actions/$id'
+    | '/activity/$id'
     | '/allowlist/$id'
     | '/allowlist/new'
+    | '/activity/'
     | '/allowlist/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  ActivityRoute: typeof ActivityRoute
+  ActivityRoute: typeof ActivityRouteWithChildren
   AllowlistRoute: typeof AllowlistRouteWithChildren
   HealthRoute: typeof HealthRoute
   ActionsIdRoute: typeof ActionsIdRoute
@@ -166,6 +188,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ActionsIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/activity/': {
+      id: '/activity/'
+      path: '/'
+      fullPath: '/activity/'
+      preLoaderRoute: typeof ActivityIndexRouteImport
+      parentRoute: typeof ActivityRoute
+    }
+    '/activity/$id': {
+      id: '/activity/$id'
+      path: '/$id'
+      fullPath: '/activity/$id'
+      preLoaderRoute: typeof ActivityIdRouteImport
+      parentRoute: typeof ActivityRoute
+    }
     '/allowlist/': {
       id: '/allowlist/'
       path: '/'
@@ -190,6 +226,20 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface ActivityRouteChildren {
+  ActivityIdRoute: typeof ActivityIdRoute
+  ActivityIndexRoute: typeof ActivityIndexRoute
+}
+
+const ActivityRouteChildren: ActivityRouteChildren = {
+  ActivityIdRoute: ActivityIdRoute,
+  ActivityIndexRoute: ActivityIndexRoute,
+}
+
+const ActivityRouteWithChildren = ActivityRoute._addFileChildren(
+  ActivityRouteChildren,
+)
+
 interface AllowlistRouteChildren {
   AllowlistIdRoute: typeof AllowlistIdRoute
   AllowlistNewRoute: typeof AllowlistNewRoute
@@ -208,7 +258,7 @@ const AllowlistRouteWithChildren = AllowlistRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  ActivityRoute: ActivityRoute,
+  ActivityRoute: ActivityRouteWithChildren,
   AllowlistRoute: AllowlistRouteWithChildren,
   HealthRoute: HealthRoute,
   ActionsIdRoute: ActionsIdRoute,

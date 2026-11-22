@@ -108,6 +108,57 @@ describe("routes", () => {
     )
   })
 
+  test("new read routes validate ids, ranges, zones and filters", async () => {
+    const { calls, send } = harness()
+    const call = "0123456789abcdef0123456789abcdef"
+    for (const [path, status] of [
+      [`/api/activity/${call}`, 200],
+      ["/api/activity/0123", 400],
+      [`/api/activity/${call.toUpperCase()}`, 400],
+      ["/api/health?range=7d&tz=America/New_York", 200],
+      ["/api/health?range=1y", 400],
+      ["/api/health?tz=..%2F..%2Fetc", 400],
+      ["/api/overview?range=24h&tz=Europe/London", 200],
+      [
+        "/api/activity?q=archive&tool=archive_messages,move_messages&refusals=1&offset=50&limit=50&from=2026-11-01T04:00:00Z&tz=America/New_York",
+        200,
+      ],
+      ["/api/activity?limit=1000", 400],
+      ["/api/activity?refusals=yes", 400],
+    ] as const)
+      assert.equal((await send(path)).status, status, path)
+    assert.deepEqual(
+      calls.map((c) => c.path),
+      [
+        `/api/activity/${call}`,
+        "/api/health?range=7d&tz=America%2FNew_York",
+        "/api/overview?range=24h&tz=Europe%2FLondon",
+        "/api/activity?q=archive&from=2026-11-01T04%3A00%3A00.000Z&tool=archive_messages%2Cmove_messages&refusals=1&offset=50&limit=50&tz=America%2FNew_York",
+      ]
+    )
+  })
+
+  test("restore forwards no body and checks the entry id", async () => {
+    const { calls, send } = harness()
+    const id = "3c8e1f20-7a4b-4d9e-b6c2-1e5f8a9d0b47"
+    assert.equal(
+      (await send(`/api/allowlist/${id}/restore`, post({ evil: 1 }))).status,
+      200
+    )
+    assert.equal(
+      (await send("/api/allowlist/..%2Fx/restore", post({}))).status,
+      400
+    )
+    assert.deepEqual(calls, [
+      {
+        method: "POST",
+        path: `/api/allowlist/${id}/restore`,
+        timeoutMs: 15_000,
+        assertion: undefined,
+      },
+    ])
+  })
+
   test("forwards the Access assertion and nothing else from the browser", async () => {
     const { calls, send } = harness()
     await send("/api/health", {

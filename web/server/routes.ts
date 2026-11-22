@@ -1,10 +1,13 @@
 import type { Context, Hono } from "hono"
 import { bodyLimit } from "hono/body-limit"
-import { OUTCOMES, RANGES, TOOLS } from "../src/lib/types.ts"
+import { RANGES } from "../src/lib/types.ts"
 import {
+  CALL_ID_PATTERN,
   ID_PATTERN,
+  parseActivityQuery,
   parseAllowlistBody,
   parseUnarchiveBody,
+  ZONE_PATTERN,
 } from "../src/lib/validation.ts"
 
 export type CoreMethod = "GET" | "POST" | "PATCH" | "DELETE"
@@ -26,9 +29,18 @@ const READ_TIMEOUT_MS = 15_000
 const WRITE_TIMEOUT_MS = 150_000
 const MAX_ERROR_LENGTH = 300
 
-const tools = new Set<string>(TOOLS)
-const outcomes = new Set<string>(OUTCOMES)
 const ranges = new Set<string>(RANGES)
+
+/** range and tz for overview and health, rebuilt from checked values. */
+function rangeQuery(c: Context, fallback: string) {
+  const range = c.req.query("range") || fallback
+  const tz = c.req.query("tz") || ""
+  if (!ranges.has(range)) return { error: "Unknown range" }
+  if (tz && !ZONE_PATTERN.test(tz)) return { error: "Unknown time zone" }
+  const query = new URLSearchParams({ range })
+  if (tz) query.set("tz", tz)
+  return { query }
+}
 
 const bad = (c: Context, error: string) => c.json({ error }, 400)
 
@@ -88,19 +100,25 @@ export function registerMailRoutes(app: Hono<any>, forward: Forward) {
   })
 
   app.get("/api/overview", (c) => {
-    const range = c.req.query("range") || "7d"
-    if (!ranges.has(range)) return bad(c, "Unknown range")
-    return send(c, { method: "GET", path: `/api/overview?range=${range}` })
+    const parsed = rangeQuery(c, "7d")
+    if (!parsed.query) return bad(c, parsed.error)
+    return send(c, { method: "GET", path: `/api/overview?${parsed.query}` })
   })
 
   app.get("/api/activity", (c) => {
-    const tool = c.req.query("tool") || ""
-    const outcome = c.req.query("outcome") || ""
-    if (tool && !tools.has(tool) && tool !== "unknown")
-      return bad(c, "Unknown tool")
-    if (outcome && !outcomes.has(outcome)) return bad(c, "Unknown outcome")
-    const query = new URLSearchParams({ tool, outcome })
-    return send(c, { method: "GET", path: `/api/activity?${query}` })
+    const parsed = parseActivityQuery(new URL(c.req.url).searchParams)
+    if (!parsed.ok) return bad(c, parsed.error)
+    const query = parsed.value.toString()
+    return send(c, {
+      method: "GET",
+      path: query ? `/api/activity?${query}` : "/api/activity",
+    })
+  })
+
+  app.get("/api/activity/:id", (c) => {
+    const id = c.req.param("id")
+    if (!CALL_ID_PATTERN.test(id)) return bad(c, "Invalid call id")
+    return send(c, { method: "GET", path: `/api/activity/${id}` })
   })
 
   app.get("/api/actions/:id", (c) => {
@@ -162,7 +180,17 @@ export function registerMailRoutes(app: Hono<any>, forward: Forward) {
     return send(c, { method: "DELETE", path: `/api/allowlist/${id}` })
   })
 
-  app.get("/api/health", (c) => send(c, { method: "GET", path: "/api/health" }))
+  app.post("/api/allowlist/:id/restore", (c) => {
+    const id = c.req.param("id")
+    if (!ID_PATTERN.test(id)) return bad(c, "Invalid entry id")
+    return send(c, { method: "POST", path: `/api/allowlist/${id}/restore` })
+  })
+
+  app.get("/api/health", (c) => {
+    const parsed = rangeQuery(c, "24h")
+    if (!parsed.query) return bad(c, parsed.error)
+    return send(c, { method: "GET", path: `/api/health?${parsed.query}` })
+  })
 
   // Anything else under /api is not part of the contract.
   app.all("/api/*", (c) => c.json({ error: "Not found" }, 404))

@@ -9,7 +9,8 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@zsrobinson/shell/ui/breadcrumb"
-import { allowlistEntryQuery } from "@/lib/queries"
+import { shortId, TOOL_LABELS } from "@/lib/format"
+import { allowlistEntryQuery, callQuery } from "@/lib/queries"
 
 type Crumb = { label: ReactNode; to: string; params?: Record<string, string> }
 
@@ -18,21 +19,24 @@ function EntryLabel({ id }: { id: string }) {
   return entry.data?.entry.address ?? "Sender"
 }
 
+function CallLabel({ id }: { id: string }) {
+  const call = useQuery(callQuery(id))
+  return call.data
+    ? `${TOOL_LABELS[call.data.call.tool]} ${shortId(call.data.call.action_id ?? id)}`
+    : "Call"
+}
+
 /** Section › page, from each matched route's static crumb. */
 export function AppBreadcrumbs() {
   const matches = useMatches()
   const crumbs: Crumb[] = []
   for (const match of matches) {
     const params = match.params as Record<string, string>
-    if (match.routeId === "/actions/$id")
-      // Actions are reached from Activity; show a short id, the page has the full one.
-      crumbs.push(
-        { label: "Activity", to: "/activity" },
-        { label: params.id.slice(0, 8), to: match.fullPath, params }
-      )
     const label =
       match.routeId === "/allowlist/$id" ? (
         <EntryLabel id={params.id} />
+      ) : match.routeId === "/activity/$id" ? (
+        <CallLabel id={params.id} />
       ) : (
         match.staticData.crumb
       )
