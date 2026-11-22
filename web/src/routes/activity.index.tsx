@@ -55,6 +55,7 @@ import {
   formatInteger,
   localDay,
   OUTCOME_LABELS,
+  OUTCOME_SERIES,
   TOOL_LABELS,
 } from "@/lib/format"
 import { activityQuery } from "@/lib/queries"
@@ -183,12 +184,6 @@ const TOOL_GROUPS: Record<string, Tool[]> = {
 const TOOL_OPTIONS = Object.entries(TOOL_GROUPS).flatMap(([group, tools]) =>
   tools.map((tool) => ({ value: tool, label: TOOL_LABELS[tool], group }))
 )
-
-const chartConfig = {
-  ok: { label: "Succeeded", color: "var(--chart-1)" },
-  refused: { label: "Refused", color: "var(--chart-3)" },
-  error: { label: "Failed", color: "var(--destructive)" },
-}
 
 function ActivityPage() {
   const search = Route.useSearch()
@@ -409,7 +404,7 @@ function ActivityPage() {
                   refused: p.refused,
                   error: p.error,
                 }))}
-                config={chartConfig}
+                config={OUTCOME_SERIES}
                 formatTime={bucketFormat(data.series.bucket_seconds)}
                 label={`Calls per ${data.series.bucket_seconds >= 604_800 ? "week" : data.series.bucket_seconds >= 86_400 ? "day" : "hour"} matching these filters, by outcome`}
                 className="h-44"

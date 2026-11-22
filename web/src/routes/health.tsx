@@ -38,7 +38,6 @@ import { ExternalLinkIcon, TriangleAlertIcon } from "lucide-react"
 import { ErrorClassBadge, StateBadge, ToneBadge } from "@/components/badges"
 import { LatencySparkline } from "@/components/charts"
 import {
-  bucketFormat,
   COMPONENT_LABELS,
   formatInteger,
   formatMs,
@@ -78,6 +77,26 @@ export const Route = createFileRoute("/health")({
   },
   component: HealthPage,
 })
+
+/** "Sun, Nov 22, 3:00 – 4:00 PM": each status bar's period, for its tooltip. */
+function rangeFormat(bucketSeconds: number) {
+  const formatter = new Intl.DateTimeFormat(
+    undefined,
+    bucketSeconds >= 86_400
+      ? { weekday: "short", month: "short", day: "numeric" }
+      : {
+          weekday: "short",
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        }
+  )
+  return (start: number) =>
+    bucketSeconds >= 86_400
+      ? formatter.format(start)
+      : formatter.formatRange(start, start + bucketSeconds * 1000)
+}
 
 /** What a component's state means and what to check, in a sentence or two. */
 const EXPLAIN: Record<string, Partial<Record<State, string>>> = {
@@ -170,7 +189,7 @@ function HealthCards({ data, range }: { data: Health; range: Range }) {
   const problems = data.components.filter(
     (c) => c.state !== "ok" && EXPLAIN[c.id]?.[c.state]
   )
-  const formatTime = bucketFormat(data.bucket_seconds)
+  const formatTime = rangeFormat(data.bucket_seconds)
   const measured = data.components.filter((c) => c.latency.length > 0)
   return (
     <>
@@ -197,14 +216,14 @@ function HealthCards({ data, range }: { data: Health; range: Range }) {
             const good = known.filter((p) => p.state === "ok").length
             return (
               <section key={c.id} className="flex flex-col gap-2">
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-col gap-0.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
                   <h3 className="flex min-w-0 items-center gap-2 text-sm font-medium">
                     <span className="truncate">
                       {COMPONENT_LABELS[c.id] ?? c.name}
                     </span>
                     <StateBadge state={c.state} />
                   </h3>
-                  <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                  <span className="text-xs text-muted-foreground tabular-nums sm:shrink-0">
                     {known.length
                       ? `${Math.round((good / known.length) * 1000) / 10}% clear`
                       : "No data"}
@@ -244,7 +263,11 @@ function HealthCards({ data, range }: { data: Health; range: Range }) {
           </CardHeader>
           <CardContent>
             <DetailList>
-              <DetailRow label="Version">{data.about.version}</DetailRow>
+              <DetailRow label="Version">
+                {data.about.version ?? (
+                  <Unavailable>Not recorded by the installer</Unavailable>
+                )}
+              </DetailRow>
               <DetailRow label="Pinned release">
                 {data.about.release ? (
                   <span className="flex items-center gap-1">

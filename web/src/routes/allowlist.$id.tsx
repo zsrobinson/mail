@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import {
@@ -57,6 +57,8 @@ import type { AllowlistEntry, HistoryItem } from "@/lib/types"
 import { dateFromExpiry, expiryFromDate } from "@/lib/validation"
 
 export const Route = createFileRoute("/allowlist/$id")({
+  validateSearch: (search): { focus?: "expiry" } =>
+    search.focus === "expiry" ? { focus: "expiry" } : {},
   loader: ({ context: { queryClient }, params }) => {
     void queryClient.prefetchQuery(allowlistEntryQuery(params.id))
   },
@@ -65,7 +67,18 @@ export const Route = createFileRoute("/allowlist/$id")({
 
 function EntryPage() {
   const { id } = Route.useParams()
+  const focus = Route.useSearch({ select: (s) => s.focus })
   const detail = useQuery(allowlistEntryQuery(id))
+  const loaded = Boolean(detail.data)
+  // Extend and Renew links land on the expiry choice, ready for the keyboard.
+  useEffect(() => {
+    if (focus !== "expiry" || !loaded) return
+    const target =
+      document.querySelector<HTMLElement>("[data-renew-primary]") ??
+      document.querySelector<HTMLElement>('[id$="-until"]')
+    target?.scrollIntoView({ block: "center" })
+    target?.focus({ preventScroll: true })
+  }, [focus, loaded])
   if (detail.isError)
     return (
       <Page>
@@ -153,6 +166,7 @@ function RenewCard({ entry }: { entry: AllowlistEntry }) {
             <Button
               key={preset.label}
               variant={preset.label === "30 days" ? "default" : "outline"}
+              data-renew-primary={preset.label === "30 days" ? "" : undefined}
               size="sm"
               disabled={update.isPending}
               onClick={() => {

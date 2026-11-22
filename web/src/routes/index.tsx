@@ -41,6 +41,7 @@ import {
   formatInteger,
   formatMs,
   KIND_LABELS,
+  OUTCOME_SERIES,
   REFUSAL_LABELS,
 } from "@/lib/format"
 import { overviewQuery } from "@/lib/queries"
@@ -76,10 +77,6 @@ export const Route = createFileRoute("/")({
   component: OverviewPage,
 })
 
-const callsConfig = {
-  ok: { label: "Succeeded", color: "var(--chart-1)" },
-  error: { label: "Not succeeded", color: "var(--chart-3)" },
-}
 const readsConfig = {
   allowed: { label: "Returned", color: "var(--chart-1)" },
   refused: { label: "Refused", color: "var(--chart-3)" },
@@ -196,17 +193,17 @@ function OverviewCards({ data, range }: { data: Overview; range: Range }) {
               {formatInteger(t.calls)}
             </Stat>
             <Stat
-              label="Not succeeded"
+              label="Failed"
               delta={
                 <StatDelta
-                  current={t.errors}
-                  previous={p.errors}
+                  current={t.failed}
+                  previous={p.failed}
                   better="down"
                   period={period}
                 />
               }
             >
-              {formatInteger(t.errors)}
+              {formatInteger(t.failed)}
             </Stat>
             <Stat
               label="Write calls"
@@ -242,11 +239,12 @@ function OverviewCards({ data, range }: { data: Overview; range: Range }) {
             data={data.calls.map((c) => ({
               time: Date.parse(c.start),
               ok: c.ok,
+              refused: c.refused,
               error: c.error,
             }))}
-            config={callsConfig}
+            config={OUTCOME_SERIES}
             formatTime={formatTime}
-            label="Tool calls per period, succeeded and not"
+            label="Tool calls per period by outcome: succeeded, refused and failed"
           />
         </CardContent>
       </Card>
@@ -487,7 +485,11 @@ function attentionText(item: AttentionItem): {
           </>
         ),
         link: item.entry_id ? (
-          <CardLink to="/allowlist/$id" params={{ id: item.entry_id }}>
+          <CardLink
+            to="/allowlist/$id"
+            params={{ id: item.entry_id }}
+            search={{ focus: "expiry" }}
+          >
             {item.kind === "expiring" ? "Extend" : "Renew"}
           </CardLink>
         ) : null,

@@ -442,9 +442,20 @@ const RANGE_SPEC: Record<Range, [number, Unit]> = {
   "7d": [7, "6h"],
   "30d": [30, "day"],
 }
+const OVERVIEW_UNITS: Record<Range, Unit> = {
+  "24h": "hour",
+  "7d": "day",
+  "30d": "day",
+}
 
-function rangeStarts(range: Range, current: number, tz: string) {
-  const [days, unit] = RANGE_SPEC[range]
+function rangeStarts(
+  range: Range,
+  current: number,
+  tz: string,
+  override?: Unit
+) {
+  const [days, fallback] = RANGE_SPEC[range]
+  const unit = override ?? fallback
   const starts = bucketStarts(current - days * DAY, current, unit, tz)
   return { starts: starts.slice(-((days * DAY) / UNIT_MS[unit])), unit }
 }
@@ -503,6 +514,9 @@ function totalsOf(rows: ActivityRow[]): PeriodTotals {
   return {
     calls: rows.length,
     errors: rows.filter((r) => r.outcome !== "ok").length,
+    refused_calls: rows.filter((r) => r.outcome === "refused").length,
+    failed: rows.filter((r) => r.outcome === "error" || r.outcome === "busy")
+      .length,
     body_reads_allowed: sum(reads, (r) => r.counts.returned),
     body_reads_refused: sum(reads, refusedCount),
     writes: writes.length,
@@ -574,13 +588,19 @@ export function createFixtures(now: () => number = () => Date.now()) {
 
   function overview(range: Range, tz: string): Overview {
     const current = now()
-    const { starts, unit } = rangeStarts(range, current, tz)
+    const { starts, unit } = rangeStarts(
+      range,
+      current,
+      tz,
+      OVERVIEW_UNITS[range]
+    )
     const first = starts[0]
     const length = current - first
     const index = new Map(starts.map((s, i) => [s, i]))
     const calls = starts.map((s) => ({
       start: new Date(s).toISOString(),
       ok: 0,
+      refused: 0,
       error: 0,
     }))
     const reads = calls.map(({ start }) => ({ start, allowed: 0, refused: 0 }))
@@ -593,6 +613,7 @@ export function createFixtures(now: () => number = () => Date.now()) {
       const i = index.get(floorLocal(Date.parse(event.time), unit, tz))
       if (i === undefined) continue
       if (event.outcome === "ok") calls[i].ok++
+      else if (event.outcome === "refused") calls[i].refused++
       else calls[i].error++
       if (event.tool === "read_messages") {
         reads[i].allowed += event.counts.returned
@@ -731,7 +752,7 @@ export function createFixtures(now: () => number = () => Date.now()) {
     for (const row of rows) {
       const i = index.get(floorLocal(Date.parse(row.time), unit, tz))
       if (i === undefined) continue
-      if (row.outcome === "ok" || row.outcome === "busy") points[i].ok++
+      if (row.outcome === "ok") points[i].ok++
       else if (row.outcome === "refused") points[i].refused++
       else points[i].error++
     }
@@ -893,7 +914,7 @@ export function createFixtures(now: () => number = () => Date.now()) {
       ],
       incidents,
       enforcement: enforcement(),
-      about: { version: "0.4.2", release: RELEASE },
+      about: { version: RELEASE.tag.slice(1), release: RELEASE },
     }
   }
 

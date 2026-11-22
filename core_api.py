@@ -27,9 +27,12 @@ class UnixHTTP(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
         pass  # Never emit request data or exception details.
 
 
-VERSION = '0.4.2'
 WRITE_KINDS = {'archive_messages': 'archive', 'unarchive_messages': 'unarchive', 'move_messages': 'move', 'add_labels': 'label', 'mark_read': 'mark_read', 'create_draft': 'draft'}
 RANGES = {'24h': (1, 'hour'), '7d': (7, '6h'), '30d': (30, 'day')}
+# Overview charts use whole days beyond 24 hours so labels land on dates.
+OVERVIEW_UNITS = {'24h': 'hour', '7d': 'day', '30d': 'day'}
+# The installer records the pinned release here; the core never guesses one.
+RELEASE_FILE = Path(__file__).with_name('release.json')
 OUTCOMES = ('ok', 'refused', 'error', 'busy')
 UUID = r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}'
 CALL_ID = r'[a-f0-9]{32}'
@@ -100,8 +103,9 @@ def parse_time(value):
     return parsed.astimezone(timezone.utc)
 
 
-def range_window(range_name, tz, now=None):
-    days, unit = RANGES[range_name]
+def range_window(range_name, tz, now=None, unit=None):
+    days, default = RANGES[range_name]
+    unit = unit or default
     now = now or datetime.now(timezone.utc)
     starts = buckets(now - timedelta(days=days), now, unit, tz)
     starts = starts[-(days * 86400 // bucket_seconds(unit)):]
@@ -124,6 +128,8 @@ def bridge_summary(health):
 def period_totals(rows):
     reads = [r for r in rows if r['tool'] == 'read_messages']
     return dict(calls=len(rows), errors=sum(r['outcome'] != 'ok' for r in rows),
+                refused_calls=sum(r['outcome'] == 'refused' for r in rows),
+                failed=sum(r['outcome'] in ('error', 'busy') for r in rows),
                 body_reads_allowed=sum(r['counts']['returned'] for r in reads),
                 body_reads_refused=sum(refused(r) for r in reads),
                 writes=sum(r['tool'] in WRITE_KINDS and not r.get('dry_run') for r in rows),
@@ -166,18 +172,18 @@ def attention(policy, totals, previous, bridge, enforcement, now):
 
 def overview(activity, range_name, policy=None, enforcement=None, tz=timezone.utc):
     now = datetime.now(timezone.utc)
-    starts, unit = range_window(range_name, tz, now)
+    starts, unit = range_window(range_name, tz, now, OVERVIEW_UNITS[range_name])
     first = starts[0]
     length = now - first
     rows = [r | {'_at': parse_time(r['time'])} for r in activity.rows(RANGES[range_name][0] * 2 + 2)]
     current = [r for r in rows if r['_at'] >= first]
     previous = [r for r in rows if first - length <= r['_at'] < first]
-    keys = {s: {'ok': 0, 'error': 0, 'allowed': 0, 'refused': 0} for s in starts}
+    keys = {s: {'ok': 0, 'refused_calls': 0, 'error': 0, 'allowed': 0, 'refused': 0} for s in starts}
     for row in current:
         bucket = keys.get(floor_time(row['_at'], unit, tz))
         if bucket is None:
             continue
-        bucket['ok' if row['outcome'] == 'ok' else 'error'] += 1
+        bucket['ok' if row['outcome'] == 'ok' else 'refused_calls' if row['outcome'] == 'refused' else 'error'] += 1
         if row['tool'] == 'read_messages':
             bucket['allowed'] += row['counts']['returned']
             bucket['refused'] += refused(row)
@@ -199,7 +205,7 @@ def overview(activity, range_name, policy=None, enforcement=None, tz=timezone.ut
     return dict(range=range_name, generated_at=now.isoformat(), bucket_seconds=bucket_seconds(unit),
                 period=dict(start=first.isoformat(), end=now.isoformat(), previous_start=(first - length).isoformat()),
                 totals=totals, previous=before,
-                calls=[dict(start=k.isoformat(), ok=b['ok'], error=b['error']) for k, b in keys.items()],
+                calls=[dict(start=k.isoformat(), ok=b['ok'], refused=b['refused_calls'], error=b['error']) for k, b in keys.items()],
                 body_reads=[dict(start=k.isoformat(), allowed=b['allowed'], refused=b['refused']) for k, b in keys.items()],
                 writes_by_kind=writes, top_senders=top, bridge=bridge,
                 attention=attention(policy, totals, before, bridge, enforcement, now) if policy is not None and enforcement is not None else [])
@@ -258,7 +264,7 @@ def activity_query(activity, query):
     for row in rows:
         bucket = series.get(floor_time(row['_at'], unit, tz))
         if bucket is not None:
-            bucket['ok' if row['outcome'] in ('ok', 'busy') else row['outcome']] += 1
+            bucket['ok' if row['outcome'] == 'ok' else 'refused' if row['outcome'] == 'refused' else 'error'] += 1
     page = [{k: v for k, v in r.items() if k != '_at'} for r in rows[offset:offset + limit]]
     return dict(rows=page, total=len(rows), offset=offset, limit=limit, truncated=offset + len(page) < len(rows),
                 series=dict(bucket_seconds=bucket_seconds(unit), points=[dict(start=k.isoformat(), **v) for k, v in series.items()]))
@@ -343,15 +349,14 @@ def audit_summary():
 
 
 def release_info():
-    """Version from the code; the pinned tag and commit when the installer recorded them."""
-    release = None
+    """The pinned release the installer recorded, or nothing: never a guess."""
     try:
-        value = json.loads(Path(__file__).with_name('release.json').read_text())
+        value = json.loads(RELEASE_FILE.read_text())
         if re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', value['tag']) and re.fullmatch(r'[a-f0-9]{40}', value['commit']):
-            release = dict(tag=value['tag'], commit=value['commit'])
+            return dict(version=value['tag'][1:], release=dict(tag=value['tag'], commit=value['commit']))
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    return dict(version=VERSION, release=release)
+    return dict(version=None, release=None)
 
 
 def enforcement_state(policy):

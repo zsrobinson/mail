@@ -14,6 +14,7 @@ import {
   formatClock,
   formatMs,
   formatPrecise,
+  OUTCOME_LABELS,
   REFUSAL_LABELS,
   shortId,
   TOOL_LABELS,
@@ -43,14 +44,17 @@ export function CallTime({ iso }: { iso: string }) {
   )
 }
 
-/** Plain badges for a list row; the detail page explains each one. */
+/**
+ * Only problems get a badge: refusal reasons, failures, busy turn-aways and
+ * previews. A successful call stays quiet; the detail page explains each one.
+ */
 function RowBadges({ row }: { row: ActivityRow }) {
   const reasons = REFUSAL_REASONS.filter((r) => row.counts.refused[r] > 0)
+  const problem =
+    row.outcome === "error" || row.outcome === "busy" || row.dry_run
+  if (reasons.length === 0 && !problem) return null
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-1">
-      {reasons.length === 0 || row.outcome !== "refused" ? (
-        <OutcomeBadge outcome={row.outcome} />
-      ) : null}
+    <span className="flex min-w-0 flex-wrap items-center gap-1">
       {reasons.map((reason) => (
         <Badge
           key={reason}
@@ -66,38 +70,43 @@ function RowBadges({ row }: { row: ActivityRow }) {
           ) : null}
         </Badge>
       ))}
-      {row.error_class &&
-      row.error_class !== "busy" &&
-      row.outcome !== "refused" ? (
+      {row.outcome === "error" || row.outcome === "busy" ? (
+        <OutcomeBadge outcome={row.outcome} />
+      ) : null}
+      {row.outcome === "error" && row.error_class ? (
         <Badge variant="outline" className="text-muted-foreground">
           {errorLabel(row.error_class)}
         </Badge>
       ) : null}
       {row.dry_run ? <Badge variant="secondary">Preview</Badge> : null}
-    </div>
+    </span>
   )
 }
 
-/** One call: the whole row opens its detail page. */
+/** One call, read as time → tool and summary → problem; the row opens it. */
 export function CallRow({ row }: { row: ActivityRow }) {
   const summary = callSummary(row)
   return (
     <Link
       to="/activity/$id"
       params={{ id: row.id }}
-      className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-5 py-3 text-sm outline-none hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/30 focus-visible:ring-inset sm:grid-cols-[6.5rem_minmax(0,1fr)_minmax(0,14rem)_4.5rem_1rem] sm:py-2.5"
+      className="group grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-0.5 px-5 py-3 text-sm outline-none hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/30 focus-visible:ring-inset sm:grid-cols-[6.5rem_minmax(0,1fr)_4.5rem_1rem] sm:items-center sm:py-2.5"
     >
-      <span className="max-sm:hidden">
+      <span className="text-sm max-sm:hidden">
         <CallTime iso={row.time} />
       </span>
-      <span className="flex min-w-0 flex-col">
-        <span className="flex min-w-0 items-baseline gap-2">
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <span className="truncate font-medium">{TOOL_LABELS[row.tool]}</span>
           {row.action_id ? (
             <span className="font-mono text-xs text-muted-foreground">
               {shortId(row.action_id)}
             </span>
           ) : null}
+          {row.outcome === "ok" ? (
+            <span className="sr-only">{OUTCOME_LABELS.ok}</span>
+          ) : null}
+          <RowBadges row={row} />
         </span>
         {summary ? (
           <span className="truncate text-xs text-muted-foreground tabular-nums">
@@ -105,12 +114,9 @@ export function CallRow({ row }: { row: ActivityRow }) {
           </span>
         ) : null}
       </span>
-      <span className="text-xs sm:hidden">
+      <span className="flex flex-col items-end gap-0.5 text-xs sm:hidden">
         <CallTime iso={row.time} />
-      </span>
-      <span className="col-span-2 flex items-center justify-between gap-2 sm:col-span-1">
-        <RowBadges row={row} />
-        <span className="text-xs text-muted-foreground tabular-nums sm:hidden">
+        <span className="text-muted-foreground tabular-nums">
           {formatMs(row.duration_ms)}
         </span>
       </span>

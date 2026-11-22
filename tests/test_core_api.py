@@ -6,7 +6,6 @@ from pathlib import Path
 import re
 import sys
 import threading
-import tomllib
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 import pytest
@@ -111,6 +110,9 @@ def test_overview_compares_periods_and_flags_attention(log, store, monkeypatch):
     store.path.write_text(json.dumps(data))
     value = overview(log, '7d', store, core_api.enforcement_state(store))
     assert value['totals']['calls'] == 4 and value['previous']['calls'] == 1
+    assert value['totals']['failed'] == 1 and value['totals']['refused_calls'] == 1
+    assert len(value['calls']) == 7 and value['bucket_seconds'] == 86400
+    assert sum(c['ok'] + c['refused'] + c['error'] for c in value['calls']) == 4
     assert value['totals']['refusals'] == {'sender_not_allowlisted': 1, 'sender_not_verified': 1}
     assert value['previous']['refusals']['sender_not_allowlisted'] == 1
     assert value['totals']['messages_changed'] == 2
@@ -202,8 +204,14 @@ def test_health_reports_ranges_timelines_enforcement_and_version(api, log, tmp_p
     assert {(i['component'], i['error_class']) for i in value['incidents']} == {('bridge', 'OSError'), ('mcp', 'deadline')}
     assert value['enforcement']['authserv_configured'] and value['enforcement']['store_ok']
     assert value['enforcement']['audit']['counts']['scanned'] == 1
-    version = tomllib.loads((Path(__file__).parents[1] / 'pyproject.toml').read_text())['project']['version']
-    assert value['about'] == {'version': version, 'release': None}
+    assert value['about'] == {'version': None, 'release': None}
+    commit = 'ab' * 20
+    release = tmp_path / 'release.json'
+    release.write_text(json.dumps({'tag': 'v9.8.7', 'commit': commit}))
+    monkeypatch.setattr(core_api, 'RELEASE_FILE', release)
+    assert api('GET', '/api/health')[1]['about'] == {'version': '9.8.7', 'release': {'tag': 'v9.8.7', 'commit': commit}}
+    release.write_text(json.dumps({'tag': 'latest', 'commit': commit}))
+    assert api('GET', '/api/health')[1]['about'] == {'version': None, 'release': None}
     assert api('GET', '/api/health?range=1y')[0] == 400
 
 

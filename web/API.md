@@ -22,9 +22,14 @@ All times are ISO 8601 UTC strings. Counts are non-negative integers. Errors are
 | `WriteKind` | `archive`, `unarchive`, `move`, `label`, `mark_read`, `draft`                                                                                                                                                            |
 | `State`     | `ok`, `degraded`, `down`, `unknown`                                                                                                                                                                                      |
 
-Chart series are dense: one point per bucket, oldest first, zero-filled. The
-bucket is 1 hour for `24h` (24 points), 6 hours for `7d` (28 points) and 1 day
-for `30d` (30 points). `start` is the bucket's inclusive start.
+Chart series are dense: one point per bucket, oldest first, zero-filled.
+Overview buckets are 1 hour for `24h` (24 points) and one calendar day for
+`7d` (7 points) and `30d` (30 points), so every calls chart in the app labels
+the same days. Health status bars use 1 hour, 6 hours (28) and 1 day. `start`
+is the bucket's inclusive start.
+
+Calls charts share one vocabulary: `ok` (Succeeded), `refused` (Refused: bodies
+withheld by the allowlist) and `error` (Failed, including busy turn-aways).
 
 ## Time zones
 
@@ -54,6 +59,8 @@ zone; an unknown zone falls back to UTC. `start` values stay ISO UTC instants.
     "body_reads_refused": 6,
     "writes": 18,
     "messages_changed": 140,
+    "refused_calls": 4,
+    "failed": 5,
     "refusals": { "sender_not_allowlisted": 5, "sender_not_verified": 1 }
   },
   "previous": { "...": "the same fields for the previous period" },
@@ -74,7 +81,9 @@ zone; an unknown zone falls back to UTC. `start` values stay ISO UTC instants.
       "time": "2026-11-22T04:59:59Z"
     }
   ],
-  "calls": [{ "start": "2026-11-13T18:00:00Z", "ok": 14, "error": 1 }],
+  "calls": [
+    { "start": "2026-11-13T05:00:00Z", "ok": 14, "refused": 1, "error": 1 }
+  ],
   "body_reads": [
     { "start": "2026-11-13T18:00:00Z", "allowed": 2, "refused": 0 }
   ],
@@ -89,7 +98,9 @@ zone; an unknown zone falls back to UTC. `start` values stay ISO UTC instants.
 }
 ```
 
-- `calls[].error` counts every outcome other than `ok`.
+- `calls[].refused` counts refused calls; `calls[].error` counts failed and
+  busy calls. `totals.errors` is every call that did not succeed;
+  `totals.refused_calls` and `totals.failed` split it the same way.
 - `body_reads` counts messages, not calls: `allowed` were returned, `refused`
   were withheld by the allowlist (both refusal reasons).
 - `writes_by_kind` lists every `WriteKind`, zero included, in the order above.
@@ -176,8 +187,9 @@ values and drops anything else.
 - `error_class` is a fixed class name such as `deadline`, `stopped`,
   `PublicError` or `OSError`, never an exception message.
 - `series` covers the filtered calls: hourly up to 2 days, daily up to 92
-  days, otherwise weekly; `busy` counts as `ok`. Without `from` it starts at
-  the oldest matching call.
+  days, otherwise weekly. Without `from` it starts at
+  the oldest matching call. `ok` counts succeeded calls, `refused` refused
+  calls and `error` failed and busy calls.
 
 ## GET /api/activity/:id
 
@@ -416,7 +428,9 @@ recorded as `added`.
   set, never the value. `audit` is the last aggregate header audit, when
   `MAIL_AUTH_AUDIT_RESULT` names its private result file, or `null`.
 - `about.release` is the tag and commit an installer recorded in
-  `release.json` beside the core, or `null`.
+  `release.json` beside the core, and `about.version` is that tag without
+  the `v`. Both are `null` when nothing was recorded; the core never reports a
+  version of its own.
 
 ## Build and run
 

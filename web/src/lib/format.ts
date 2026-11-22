@@ -277,3 +277,10 @@ export function bucketFormat(bucketSeconds: number) {
       ? `Week of ${formatter.format(time)}`
       : formatter.format(time)
 }
+
+/** One vocabulary and colour per outcome for every calls chart. */
+export const OUTCOME_SERIES = {
+  ok: { label: "Succeeded", color: "var(--chart-1)" },
+  refused: { label: "Refused", color: "var(--chart-3)" },
+  error: { label: "Failed", color: "var(--destructive)" },
+}

@@ -44,7 +44,11 @@ export type RefusalReason = (typeof REFUSAL_REASONS)[number]
 
 export type PeriodTotals = {
   calls: number
+  /** Every call that did not succeed: refused, failed or busy. */
   errors: number
+  refused_calls: number
+  /** Failed or busy calls. */
+  failed: number
   body_reads_allowed: number
   body_reads_refused: number
   writes: number
@@ -87,7 +91,7 @@ export type Overview = {
     state: EntryState
   }[]
   attention: AttentionItem[]
-  calls: { start: string; ok: number; error: number }[]
+  calls: { start: string; ok: number; refused: number; error: number }[]
   body_reads: { start: string; allowed: number; refused: number }[]
   writes_by_kind: { kind: WriteKind; calls: number; messages: number }[]
   bridge: {
@@ -264,7 +268,8 @@ export type Enforcement = {
 }
 
 export type About = {
-  version: string
+  /** From the pinned release the installer recorded; null when unknown. */
+  version: string | null
   release: { tag: string; commit: string } | null
 }
 
