@@ -11,11 +11,13 @@ import {
 } from "@zsrobinson/shell"
 import {
   ChartRangeSelect,
+  TrendChart,
   type ChartRangeOption,
 } from "@zsrobinson/shell/blocks/chart-card"
-import { ConfirmAction } from "@zsrobinson/shell/blocks/confirm-action"
 import { EmptyList } from "@zsrobinson/shell/blocks/list-row"
 import { QueryError } from "@zsrobinson/shell/blocks/query-error"
+import { Stat, StatRow } from "@zsrobinson/shell/blocks/stat"
+import { formatCalendarDate } from "@zsrobinson/shell/lib/calendar-date"
 import { formatDateTime, formatRelative } from "@zsrobinson/shell/lib/format"
 import { Button } from "@zsrobinson/shell/ui/button"
 import {
@@ -28,21 +30,31 @@ import {
 } from "@zsrobinson/shell/ui/card"
 import { Skeleton } from "@zsrobinson/shell/ui/skeleton"
 import { Spinner } from "@zsrobinson/shell/ui/spinner"
-import { ExpiryBadge } from "@/components/badges"
+import { CalendarClockIcon, Trash2Icon } from "lucide-react"
+import { EntryStateBadge } from "@/components/badges"
 import {
+  endOfDayLabel,
+  EXPIRY_PRESETS,
   SenderFields,
   senderErrors,
   senderInput,
   type SenderDraft,
 } from "@/components/sender-fields"
-import { StackedBars } from "@/components/charts"
-import { Totals } from "@/components/totals"
 import { ApiError } from "@/lib/api"
-import { CHANGE_LABELS, formatDate } from "@/lib/format"
-import { useRemoveSender, useUpdateSender } from "@/lib/mutations"
+import {
+  CHANGE_LABELS,
+  entryState,
+  formatDate,
+  formatInteger,
+} from "@/lib/format"
+import {
+  useRemoveSender,
+  useRestoreSender,
+  useUpdateSender,
+} from "@/lib/mutations"
 import { allowlistEntryQuery } from "@/lib/queries"
 import type { AllowlistEntry, HistoryItem } from "@/lib/types"
-import { dateFromExpiry } from "@/lib/validation"
+import { dateFromExpiry, expiryFromDate } from "@/lib/validation"
 
 export const Route = createFileRoute("/allowlist/$id")({
   loader: ({ context: { queryClient }, params }) => {
@@ -82,23 +94,27 @@ function EntryPage() {
       </Page>
     )
   const { entry, history } = detail.data
+  const state = entryState(entry.expires_at)
   return (
     <Page>
       <PageHeader>
         <div className="flex min-w-0 flex-col gap-1">
           <PageTitle className="break-all">{entry.address}</PageTitle>
           <PageMeta>
-            <ExpiryBadge expiresAt={entry.expires_at} />
+            <EntryStateBadge state={state} />
             <span>Added {formatDate(entry.added_at)}</span>
-            {entry.expires_at ? (
-              <span>Until {formatDate(entry.expires_at)}</span>
-            ) : null}
+            <span>
+              {entry.expires_at
+                ? `${state === "expired" ? "Ended" : "Until"} ${formatDateTime(entry.expires_at)}`
+                : "No end date"}
+            </span>
           </PageMeta>
         </div>
         <PageActions>
           <RemoveSender entry={entry} />
         </PageActions>
       </PageHeader>
+      {state !== "active" ? <RenewCard entry={entry} /> : null}
       <MatchesCard entry={entry} />
       {/* Remount on save so the form starts from the stored values. */}
       <EditCard
@@ -110,12 +126,75 @@ function EntryPage() {
   )
 }
 
+/** Extend an entry that is about to end, or renew one that has. */
+function RenewCard({ entry }: { entry: AllowlistEntry }) {
+  const update = useUpdateSender(entry.id)
+  const expired = entryState(entry.expires_at) === "expired"
+  const [choice, setChoice] = useState<string | null>(null)
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <CalendarClockIcon className="size-4 text-chart-3" />
+          {expired ? "Renew access" : "Extend access"}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3 text-sm">
+        <p>
+          {expired ? "Access ended" : "Access ends"}{" "}
+          {formatRelative(entry.expires_at!)}, on{" "}
+          {formatDateTime(entry.expires_at!)}.{" "}
+          {expired
+            ? "Bodies from this sender are refused until it is renewed."
+            : "After that, bodies from this sender are refused."}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {EXPIRY_PRESETS().map((preset) => (
+            <Button
+              key={preset.label}
+              variant={preset.label === "30 days" ? "default" : "outline"}
+              size="sm"
+              disabled={update.isPending}
+              onClick={() => {
+                setChoice(preset.label)
+                update.mutate({
+                  expires_at: expiryFromDate(preset.value) ?? null,
+                  success: preset.value
+                    ? `Allowed until ${formatCalendarDate(preset.value)}`
+                    : "Allowed with no end date",
+                })
+              }}
+            >
+              {update.isPending && choice === preset.label ? (
+                <Spinner data-icon="inline-start" />
+              ) : null}
+              {preset.value
+                ? `${preset.label} · ${formatCalendarDate(preset.value)}`
+                : preset.label}
+            </Button>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          New end times are {endOfDayLabel(EXPIRY_PRESETS()[0].value)} on the
+          chosen day. Pick any other date under Edit.
+        </p>
+      </CardContent>
+    </Card>
+  )
+}
+
 const MATCH_RANGES: ChartRangeOption<"30" | "90" | "366">[] = [
   { value: "30", label: "Last 30 days", duration: 30 * 86_400 },
   { value: "90", label: "Last 90 days", duration: 90 * 86_400 },
   { value: "366", label: "Last year", duration: 366 * 86_400 },
 ]
 const matchConfig = { count: { label: "Matches", color: "var(--chart-1)" } }
+const utcDay = new Intl.DateTimeFormat(undefined, {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC",
+})
 
 function MatchesCard({ entry }: { entry: AllowlistEntry }) {
   const [days, setDays] = useState<"30" | "90" | "366">("30")
@@ -133,27 +212,36 @@ function MatchesCard({ entry }: { entry: AllowlistEntry }) {
           />
         </CardAction>
       </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <Totals
-          items={[
-            ["In range", total],
-            ["All time", entry.match_count],
-          ]}
-        />
-        <StackedBars
-          rows={series.map((m) => ({
-            start: `${m.date}T00:00:00Z`,
-            count: m.count,
-          }))}
-          config={matchConfig}
-          bucketSeconds={86_400}
-          label="Body reads allowed by this entry per day"
-        />
-        <p className="text-sm text-muted-foreground">
-          {entry.last_matched_at
-            ? `Last matched ${formatRelative(entry.last_matched_at)}`
-            : "Not matched yet"}
-        </p>
+      <CardContent className="flex flex-col gap-5">
+        <StatRow>
+          <Stat label="In range">{formatInteger(total)}</Stat>
+          <Stat label="All time">{formatInteger(entry.match_count)}</Stat>
+          <Stat label="Last matched">
+            <span className="text-base font-medium">
+              {entry.last_matched_at
+                ? formatRelative(entry.last_matched_at)
+                : "Never"}
+            </span>
+          </Stat>
+        </StatRow>
+        {total === 0 ? (
+          <p className="flex h-32 items-center justify-center rounded-2xl border border-dashed text-sm text-muted-foreground">
+            No bodies returned for this sender in this range
+          </p>
+        ) : (
+          <TrendChart
+            kind="bar"
+            utc
+            data={series.map((m) => ({
+              time: Date.parse(`${m.date}T00:00:00Z`),
+              count: m.count,
+            }))}
+            config={matchConfig}
+            formatTime={(time) => utcDay.format(time)}
+            label="Bodies returned for this sender per day"
+            className="h-44"
+          />
+        )}
       </CardContent>
     </Card>
   )
@@ -254,23 +342,47 @@ function ChangesCard({ history }: { history: HistoryItem[] }) {
   )
 }
 
+/**
+ * Removal is immediate and undoable: the core keeps the entry, its matches
+ * and its history, and the toast's Undo restores exactly that entry.
+ */
 function RemoveSender({ entry }: { entry: AllowlistEntry }) {
   const navigate = useNavigate()
   const remove = useRemoveSender(entry.id)
+  const restore = useRestoreSender()
   return (
-    <ConfirmAction
-      trigger={<Button variant="outline">Remove</Button>}
-      title={`Remove ${entry.address}?`}
-      confirmLabel="Remove"
-      destructive
-      onConfirm={async () => {
-        await remove.mutateAsync()
-        toast.success(`Removed ${entry.address}`)
-        void navigate({ to: "/allowlist" })
-      }}
+    <Button
+      variant="outline"
+      disabled={remove.isPending}
+      onClick={() =>
+        remove.mutate(undefined, {
+          onSuccess: () => {
+            void navigate({ to: "/allowlist" })
+            toast.success(`Removed ${entry.address}`, {
+              description: "Bodies from this address are refused again.",
+              duration: 10_000,
+              action: {
+                label: "Undo",
+                onClick: () =>
+                  restore.mutate(entry.id, {
+                    onSuccess: () =>
+                      void navigate({
+                        to: "/allowlist/$id",
+                        params: { id: entry.id },
+                      }),
+                  }),
+              },
+            })
+          },
+        })
+      }
     >
-      Message bodies from this address will be refused again. Its history stays
-      in the action log.
-    </ConfirmAction>
+      {remove.isPending ? (
+        <Spinner data-icon="inline-start" />
+      ) : (
+        <Trash2Icon data-icon="inline-start" />
+      )}
+      Remove
+    </Button>
   )
 }

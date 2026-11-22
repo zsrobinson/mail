@@ -6,14 +6,21 @@
 import type {
   Action,
   ActionStatus,
+  Activity,
   ActivityRow,
   AllowlistEntry,
+  AttentionItem,
+  Enforcement,
+  EntryState,
   Health,
   HistoryItem,
+  Incident,
   LatencyPoint,
   Outcome,
   Overview,
+  PeriodTotals,
   Range,
+  State,
   Tool,
   WriteKind,
 } from "../src/lib/types.ts"
@@ -46,6 +53,9 @@ function pick<T>(next: () => number, weights: [T, number][]) {
 
 const int = (next: () => number, min: number, max: number) =>
   min + Math.floor(next() * (max - min + 1))
+
+const hex = (next: () => number, length: number) =>
+  Array.from({ length }, () => Math.floor(next() * 16).toString(16)).join("")
 
 /** A deterministic version 4 UUID from the fixture's random stream. */
 function uuid(next: () => number) {
@@ -82,7 +92,7 @@ const TOOL_WEIGHTS: [Tool, number][] = [
   ["unarchive_messages", 1],
 ]
 
-type Event = ActivityRow & { id: number }
+type Event = ActivityRow
 type StoredAction = Action
 
 function emptyCounts() {
@@ -107,7 +117,6 @@ function generate(now: number) {
   const next = random(20261120)
   const events: Event[] = []
   const actions = new Map<string, StoredAction>()
-  let id = 0
   const end = Math.floor(now / HOUR) * HOUR
   for (let hour = end - 30 * DAY; hour <= end; hour += HOUR) {
     const local = (new Date(hour).getUTCHours() + 19) % 24
@@ -117,7 +126,7 @@ function generate(now: number) {
       const time = hour + Math.floor(next() * HOUR)
       if (time > now) continue
       const tool = pick(next, TOOL_WEIGHTS)
-      const outcome = pick<Outcome>(next, [
+      let outcome = pick<Outcome>(next, [
         ["ok", 94],
         ["refused", 3],
         ["error", 2],
@@ -151,6 +160,17 @@ function generate(now: number) {
         counts.requested =
           kind === "draft" ? 1 : int(next, 1, next() < 0.85 ? 12 : 60)
         duration = int(next, 400, 5200)
+      }
+      // As in the core: "refused" means bodies were withheld by the
+      // allowlist; any other refusal is an error with class PublicError.
+      const withheld =
+        counts.refused.sender_not_allowlisted +
+        counts.refused.sender_not_verified
+      if (withheld > 0 && outcome === "ok") outcome = "refused"
+      let publicError = false
+      if (outcome === "refused" && withheld === 0) {
+        outcome = "error"
+        publicError = true
       }
       if (outcome === "busy") duration = int(next, 2, 12)
       else if (outcome === "error" && next() < 0.4)
@@ -217,7 +237,7 @@ function generate(now: number) {
         })
       }
       events.push({
-        id: id++,
+        id: hex(next, 32),
         time: new Date(time).toISOString(),
         tool,
         outcome,
@@ -227,20 +247,25 @@ function generate(now: number) {
             ? null
             : Math.round(40 + next() * 90),
         error_class:
-          outcome === "ok"
+          outcome === "ok" || outcome === "refused"
             ? null
-            : outcome === "refused"
-              ? "PublicError"
-              : outcome === "busy"
-                ? "busy"
+            : outcome === "busy"
+              ? "busy"
+              : publicError
+                ? "PublicError"
                 : duration >= 45_000
                   ? "deadline"
                   : kind
                     ? "stopped"
                     : "OSError",
         action_id: actionId,
+        connected: outcome !== "busy",
+        dry_run: false,
+        source_action_id: null,
+        chunks: actionId ? actions.get(actionId)!.chunks : [],
         counts,
       })
+      if (actionId) actions.get(actionId)!.call_id = events.at(-1)!.id
     }
   }
   events.sort((a, b) => Date.parse(b.time) - Date.parse(a.time))
@@ -250,11 +275,15 @@ function generate(now: number) {
   )
   const unarchives = [...actions.values()].filter((a) => a.kind === "unarchive")
   if (archives.length > 3 && unarchives.length) {
+    const restore = unarchives[unarchives.length - 1]
     archives[2].unarchive = {
       eligible: false,
       reason: "This action was already restored to INBOX.",
-      restored_by: unarchives[unarchives.length - 1].id,
+      restored_by: restore.id,
     }
+    restore.source_action_id = archives[2].id
+    const event = events.find((e) => e.action_id === restore.id)
+    if (event) event.source_action_id = archives[2].id
   }
   return { events, actions }
 }
@@ -281,7 +310,7 @@ const SEED_ENTRIES: [string, string, number | null, number, number][] = [
   ["alerts@status.example.com", "Service status alerts", null, 96, 0.45],
   ["billing@example.org", "Invoices until the contract ends", 62, 26, 0.25],
   ["security@example.com", "Sign-in alerts", null, 19, 0.15],
-  ["newsletter@example.net", "Weekly digest trial", -9, 40, 0.3],
+  ["newsletter@example.net", "Weekly digest trial", -3, 40, 0.3],
   ["team@example.org", "Calendar invites", 6, 3, 0],
 ]
 
@@ -323,9 +352,12 @@ function seedAllowlist(now: number) {
           lastDay < 0
             ? null
             : new Date(
-                today -
-                  (MATCH_DAYS - 1 - lastDay) * DAY +
-                  int(next, 8, 20) * HOUR
+                Math.min(
+                  now - 20 * 60_000,
+                  today -
+                    (MATCH_DAYS - 1 - lastDay) * DAY +
+                    int(next, 8, 20) * HOUR
+                )
               ).toISOString(),
         match_count: matches.reduce((sum, m) => sum + m.count, 0),
         matches,
@@ -345,10 +377,159 @@ const json = (status: number, body: unknown): CoreResponse => ({
 })
 const notFound = (what: string) => json(404, { error: `${what} not found` })
 
+type Unit = "hour" | "6h" | "day" | "week"
+const UNIT_MS: Record<Unit, number> = {
+  hour: HOUR,
+  "6h": 6 * HOUR,
+  day: DAY,
+  week: 7 * DAY,
+}
+
+/** Offset of a zone from UTC at an instant, in milliseconds. */
+function zoneOffset(time: number, tz: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    second: "numeric",
+  }).formatToParts(time)
+  const get = (type: string) =>
+    Number(parts.find((p) => p.type === type)?.value ?? 0)
+  const local = Date.UTC(
+    get("year"),
+    get("month") - 1,
+    get("day"),
+    get("hour"),
+    get("minute"),
+    get("second")
+  )
+  return local - Math.floor(time / 1000) * 1000
+}
+
+/** Start of the calendar bucket holding `time`, in the caller's zone. */
+function floorLocal(time: number, unit: Unit, tz: string) {
+  const offset = zoneOffset(time, tz)
+  const local = new Date(time + offset)
+  if (unit === "hour") local.setUTCMinutes(0, 0, 0)
+  else if (unit === "6h")
+    local.setUTCHours(local.getUTCHours() - (local.getUTCHours() % 6), 0, 0, 0)
+  else {
+    local.setUTCHours(0, 0, 0, 0)
+    if (unit === "week")
+      local.setUTCDate(local.getUTCDate() - ((local.getUTCDay() + 6) % 7))
+  }
+  const guess = local.getTime() - offset
+  return local.getTime() - zoneOffset(guess, tz)
+}
+
+function bucketStarts(first: number, last: number, unit: Unit, tz: string) {
+  const starts: number[] = []
+  let current = floorLocal(first, unit, tz)
+  while (current <= last && starts.length < 1000) {
+    starts.push(current)
+    const bump = unit === "day" || unit === "week" ? 2 * HOUR : 60_000
+    current = floorLocal(current + UNIT_MS[unit] + bump, unit, tz)
+  }
+  return starts
+}
+
+const RANGE_SPEC: Record<Range, [number, Unit]> = {
+  "24h": [1, "hour"],
+  "7d": [7, "6h"],
+  "30d": [30, "day"],
+}
+
+function rangeStarts(range: Range, current: number, tz: string) {
+  const [days, unit] = RANGE_SPEC[range]
+  const starts = bucketStarts(current - days * DAY, current, unit, tz)
+  return { starts: starts.slice(-((days * DAY) / UNIT_MS[unit])), unit }
+}
+
+const SEARCH_WORDS: Record<string, string> = {
+  list_folders: "list folders",
+  list_messages: "list messages",
+  search_messages: "search messages",
+  list_unsubscribe: "unsubscribe headers",
+  read_messages: "read bodies body reads",
+  create_draft: "create draft",
+  archive_messages: "archive",
+  unarchive_messages: "unarchive restore",
+  move_messages: "move",
+  add_labels: "add labels label",
+  mark_read: "mark read",
+  list_actions: "action history",
+  sender_not_allowlisted: "not on allowlist not allowlisted refused",
+  sender_not_verified: "sender not verified unverified refused",
+  deadline: "deadline timed out timeout",
+  stopped: "stopped partial",
+  PublicError: "refused rejected",
+  TimeoutError: "timeout timed out",
+  OSError: "connection network",
+  busy: "busy",
+}
+
+const refusedCount = (e: ActivityRow) =>
+  e.counts.refused.sender_not_allowlisted + e.counts.refused.sender_not_verified
+const changedCount = (e: ActivityRow) =>
+  e.counts.moved + e.counts.labelled + e.counts.marked + e.counts.drafts
+
+function searchText(e: ActivityRow) {
+  return [
+    e.tool,
+    SEARCH_WORDS[e.tool] ?? "",
+    e.outcome,
+    e.error_class ?? "",
+    SEARCH_WORDS[e.error_class ?? ""] ?? "",
+    e.action_id ?? "",
+    e.source_action_id ?? "",
+    e.id,
+    ...Object.entries(e.counts.refused)
+      .filter(([, count]) => count > 0)
+      .map(([code]) => `${code} ${SEARCH_WORDS[code]}`),
+  ]
+    .join(" ")
+    .toLowerCase()
+}
+
+function totalsOf(rows: ActivityRow[]): PeriodTotals {
+  const reads = rows.filter((r) => r.tool === "read_messages")
+  const writes = rows.filter((r) => KIND[r.tool] && !r.dry_run)
+  const sum = <T>(items: T[], f: (item: T) => number) =>
+    items.reduce((total, item) => total + f(item), 0)
+  return {
+    calls: rows.length,
+    errors: rows.filter((r) => r.outcome !== "ok").length,
+    body_reads_allowed: sum(reads, (r) => r.counts.returned),
+    body_reads_refused: sum(reads, refusedCount),
+    writes: writes.length,
+    messages_changed: sum(writes, changedCount),
+    refusals: {
+      sender_not_allowlisted: sum(
+        reads,
+        (r) => r.counts.refused.sender_not_allowlisted
+      ),
+      sender_not_verified: sum(
+        reads,
+        (r) => r.counts.refused.sender_not_verified
+      ),
+    },
+  }
+}
+
+const RELEASE = {
+  tag: "v0.4.2",
+  commit: "0123456789abcdef0123456789abcdef01234567",
+}
+
 export function createFixtures(now: () => number = () => Date.now()) {
   const started = now()
   const { events, actions } = generate(started)
   const allowlist = seedAllowlist(started)
+  const removed = new Map<string, AllowlistEntry>()
   const previews = new Map<
     string,
     { action: string; expires: number; used: boolean }
@@ -362,55 +543,140 @@ export function createFixtures(now: () => number = () => Date.now()) {
       .slice(0, 50)
       .map(({ time, change }) => ({ time, change }))
 
-  function overview(range: Range): Overview {
+  const entryState = (entry: AllowlistEntry, current: number): EntryState => {
+    if (!entry.expires_at) return "active"
+    const expires = Date.parse(entry.expires_at)
+    return expires <= current
+      ? "expired"
+      : expires - current <= 7 * DAY
+        ? "expiring"
+        : "active"
+  }
+
+  function enforcement(): Enforcement {
+    return {
+      authserv_configured: true,
+      store_ok: true,
+      audit: {
+        time: new Date(started - 2 * DAY - 3 * HOUR).toISOString(),
+        counts: {
+          scanned: 1000,
+          candidates: 4210,
+          allowlisted_sender: 64,
+          authenticated_allowlisted: 61,
+          unverified_allowlisted: 3,
+          with_authentication_results: 998,
+          with_trusted_topmost: 996,
+        },
+      },
+    }
+  }
+
+  function overview(range: Range, tz: string): Overview {
     const current = now()
-    const bucket = range === "24h" ? HOUR : range === "7d" ? 6 * HOUR : DAY
-    const count = range === "24h" ? 24 : range === "7d" ? 28 : 30
-    const end = Math.floor(current / bucket) * bucket
-    const first = end - (count - 1) * bucket
-    const calls = Array.from({ length: count }, (_, i) => ({
-      start: new Date(first + i * bucket).toISOString(),
+    const { starts, unit } = rangeStarts(range, current, tz)
+    const first = starts[0]
+    const length = current - first
+    const index = new Map(starts.map((s, i) => [s, i]))
+    const calls = starts.map((s) => ({
+      start: new Date(s).toISOString(),
       ok: 0,
       error: 0,
     }))
     const reads = calls.map(({ start }) => ({ start, allowed: 0, refused: 0 }))
     const writes = WRITE_KINDS.map((kind) => ({ kind, calls: 0, messages: 0 }))
-    for (const event of events) {
-      const index = Math.floor((Date.parse(event.time) - first) / bucket)
-      if (index < 0 || index >= count) continue
-      if (event.outcome === "ok") calls[index].ok++
-      else calls[index].error++
+    const inRange = events.filter((e) => Date.parse(e.time) >= first)
+    const before = events.filter(
+      (e) => Date.parse(e.time) >= first - length && Date.parse(e.time) < first
+    )
+    for (const event of inRange) {
+      const i = index.get(floorLocal(Date.parse(event.time), unit, tz))
+      if (i === undefined) continue
+      if (event.outcome === "ok") calls[i].ok++
+      else calls[i].error++
       if (event.tool === "read_messages") {
-        reads[index].allowed += event.counts.returned
-        reads[index].refused +=
-          event.counts.refused.sender_not_allowlisted +
-          event.counts.refused.sender_not_verified
+        reads[i].allowed += event.counts.returned
+        reads[i].refused += refusedCount(event)
       }
       const kind = KIND[event.tool]
       if (kind) {
         const row = writes.find((w) => w.kind === kind)!
         row.calls++
-        const c = event.counts
-        row.messages += c.moved + c.labelled + c.marked + c.drafts
+        row.messages += changedCount(event)
       }
     }
-    const sum = <T>(rows: T[], key: (row: T) => number) =>
-      rows.reduce((total, row) => total + key(row), 0)
-    const bridge = health().components[0]
+    const totals = totalsOf(inRange)
+    const previous = totalsOf(before)
+    const bridge = health("24h", tz).components[0]
+    const since = new Date(first).toISOString().slice(0, 10)
+    const top = allowlist.entries
+      .map((entry) => ({
+        id: entry.id,
+        address: entry.address,
+        matches: entry.matches
+          .filter((m) => m.date >= since)
+          .reduce((sum, m) => sum + m.count, 0),
+        state: entryState(entry, current),
+      }))
+      .filter((e) => e.matches > 0)
+      .toSorted(
+        (a, b) => b.matches - a.matches || a.address.localeCompare(b.address)
+      )
+      .slice(0, 5)
+    const attention: AttentionItem[] = []
+    if (bridge.state === "down" || bridge.state === "degraded")
+      attention.push({
+        kind: "bridge",
+        severity: bridge.state === "down" ? "critical" : "warning",
+        state: bridge.state,
+        time: bridge.last_error_at,
+      })
+    const refusedNow =
+      totals.refusals.sender_not_allowlisted +
+      totals.refusals.sender_not_verified
+    const refusedBefore =
+      previous.refusals.sender_not_allowlisted +
+      previous.refusals.sender_not_verified
+    if (refusedNow >= 5 && refusedNow >= 2 * Math.max(1, refusedBefore))
+      attention.push({
+        kind: "refusal_spike",
+        severity: "warning",
+        count: refusedNow,
+        previous: refusedBefore,
+      })
+    for (const entry of allowlist.entries.toSorted((a, b) =>
+      (a.expires_at ?? "").localeCompare(b.expires_at ?? "")
+    )) {
+      const state = entryState(entry, current)
+      if (
+        state === "expiring" ||
+        (state === "expired" &&
+          current - Date.parse(entry.expires_at!) <= 7 * DAY)
+      )
+        attention.push({
+          kind: state,
+          severity: state === "expiring" ? "warning" : "info",
+          entry_id: entry.id,
+          address: entry.address,
+          time: entry.expires_at,
+        })
+    }
     return {
       range,
       generated_at: new Date(current).toISOString(),
-      bucket_seconds: bucket / 1000,
-      totals: {
-        calls: sum(calls, (c) => c.ok + c.error),
-        errors: sum(calls, (c) => c.error),
-        body_reads_allowed: sum(reads, (r) => r.allowed),
-        body_reads_refused: sum(reads, (r) => r.refused),
-        writes: sum(writes, (w) => w.calls),
+      bucket_seconds: UNIT_MS[unit] / 1000,
+      period: {
+        start: new Date(first).toISOString(),
+        end: new Date(current).toISOString(),
+        previous_start: new Date(first - length).toISOString(),
       },
+      totals,
+      previous,
       calls,
       body_reads: reads,
       writes_by_kind: writes,
+      top_senders: top,
+      attention,
       bridge: {
         state: bridge.state,
         checked_at: bridge.last_success_at,
@@ -421,7 +687,66 @@ export function createFixtures(now: () => number = () => Date.now()) {
     }
   }
 
-  function health(): Health {
+  function activity(params: URLSearchParams): Activity {
+    const current = now()
+    const words = (params.get("q") ?? "")
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean)
+    const from = params.get("from") ? Date.parse(params.get("from")!) : null
+    const to = params.get("to") ? Date.parse(params.get("to")!) : null
+    const tools = (params.get("tool") ?? "").split(",").filter(Boolean)
+    const outcomes = (params.get("outcome") ?? "").split(",").filter(Boolean)
+    const refusalsOnly = params.get("refusals") === "1"
+    const offset = Number(params.get("offset") ?? 0)
+    const limit = Number(params.get("limit") ?? 50)
+    const tz = params.get("tz") || "UTC"
+    const rows = events.filter((e) => {
+      const time = Date.parse(e.time)
+      if (from !== null && time < from) return false
+      if (to !== null && time >= to) return false
+      if (tools.length && !tools.includes(e.tool)) return false
+      if (outcomes.length && !outcomes.includes(e.outcome)) return false
+      if (refusalsOnly && refusedCount(e) === 0) return false
+      if (words.length) {
+        const text = searchText(e)
+        if (!words.every((w) => text.includes(w))) return false
+      }
+      return true
+    })
+    const spanStart =
+      from ?? (rows.length ? Date.parse(rows.at(-1)!.time) : current - 7 * DAY)
+    const spanEnd = to !== null ? Math.min(to, current) : current
+    const span = spanEnd - spanStart
+    const unit: Unit =
+      span <= 2 * DAY ? "hour" : span <= 92 * DAY ? "day" : "week"
+    const starts = bucketStarts(spanStart, spanEnd, unit, tz)
+    const index = new Map(starts.map((s, i) => [s, i]))
+    const points = starts.map((s) => ({
+      start: new Date(s).toISOString(),
+      ok: 0,
+      refused: 0,
+      error: 0,
+    }))
+    for (const row of rows) {
+      const i = index.get(floorLocal(Date.parse(row.time), unit, tz))
+      if (i === undefined) continue
+      if (row.outcome === "ok" || row.outcome === "busy") points[i].ok++
+      else if (row.outcome === "refused") points[i].refused++
+      else points[i].error++
+    }
+    const page = rows.slice(offset, offset + limit)
+    return {
+      rows: page,
+      total: rows.length,
+      offset,
+      limit,
+      truncated: offset + page.length < rows.length,
+      series: { bucket_seconds: UNIT_MS[unit] / 1000, points },
+    }
+  }
+
+  function health(range: Range, tz: string): Health {
     const current = now()
     const next = random(Math.floor(current / HOUR))
     const checked = new Date(current - 20_000).toISOString()
@@ -437,6 +762,41 @@ export function createFixtures(now: () => number = () => Date.now()) {
           : null
       return { p50_ms: at(0.5), p95_ms: at(0.95) }
     }
+    const { starts, unit } = rangeStarts(range, current, tz)
+    // Synthetic history: Bridge hiccups at fixed offsets, one tool-call
+    // deadline, and nothing recorded before the fixtures "started" 26 days ago.
+    const bridgeFailures = [
+      current - 6 * HOUR - 20 * 60_000,
+      current - 6 * HOUR - 12 * 60_000,
+      current - 3 * DAY - 2 * HOUR,
+      current - 12 * DAY,
+    ]
+    const toolErrors = events
+      .filter((e) => e.outcome === "error")
+      .map((e) => ({
+        time: Date.parse(e.time),
+        error: e.error_class ?? "internal",
+      }))
+    const timeline = (id: string) =>
+      starts.map((start) => {
+        const end = start + UNIT_MS[unit]
+        const recorded = start >= current - 26 * DAY
+        const failed =
+          id === "bridge"
+            ? bridgeFailures.filter((t) => t >= start && t < end).length
+            : id === "mcp"
+              ? toolErrors.filter((t) => t.time >= start && t.time < end).length
+              : 0
+        const ok = recorded ? Math.round((end - start) / 60_000) - failed : 0
+        const state: State = !recorded
+          ? "unknown"
+          : failed === 0
+            ? "ok"
+            : ok === 0
+              ? "down"
+              : "degraded"
+        return { start: new Date(start).toISOString(), state, ok, failed }
+      })
     const quiet = {
       latency_ms: null,
       p50_ms: null,
@@ -448,9 +808,38 @@ export function createFixtures(now: () => number = () => Date.now()) {
       last_error_at: null,
       error_class: null,
     }
+    const since = starts[0]
+    const incidents: Incident[] = [
+      ...bridgeFailures.slice(0, 1).map((t) => ({
+        component: "bridge",
+        error_class: "TimeoutError",
+        count: 2,
+        started_at: new Date(t).toISOString(),
+        ended_at: new Date(bridgeFailures[1]).toISOString(),
+      })),
+      ...bridgeFailures.slice(2).map((t, i) => ({
+        component: "bridge",
+        error_class: i ? "OSError" : "TimeoutError",
+        count: 1,
+        started_at: new Date(t).toISOString(),
+        ended_at: new Date(t).toISOString(),
+      })),
+      ...toolErrors.slice(0, 12).map((t) => ({
+        component: "mcp",
+        error_class: t.error,
+        count: 1,
+        started_at: new Date(t.time).toISOString(),
+        ended_at: new Date(t.time).toISOString(),
+      })),
+    ]
+      .filter((i) => Date.parse(i.ended_at) >= since)
+      .toSorted((a, b) => Date.parse(b.ended_at) - Date.parse(a.ended_at))
+    const mcpErrors = toolErrors.filter((t) => t.time >= current - DAY)
     return {
       checked_at: checked,
       state: "degraded",
+      range,
+      bucket_seconds: UNIT_MS[unit] / 1000,
       components: [
         {
           id: "bridge",
@@ -467,6 +856,7 @@ export function createFixtures(now: () => number = () => Date.now()) {
           last_success_at: checked,
           last_error_at: login[17].time,
           error_class: "TimeoutError",
+          timeline: timeline("bridge"),
         },
         {
           id: "mcp",
@@ -475,15 +865,35 @@ export function createFixtures(now: () => number = () => Date.now()) {
           latency_ms: mcp[23].ms,
           ...stats(mcp),
           latency: mcp,
-          errors_24h: 0,
-          failures: [],
+          errors_24h: mcpErrors.length,
+          failures: mcpErrors.length
+            ? [{ error_class: mcpErrors[0].error, count: mcpErrors.length }]
+            : [],
           last_success_at: checked,
-          last_error_at: null,
-          error_class: null,
+          last_error_at: mcpErrors.length
+            ? new Date(mcpErrors[0].time).toISOString()
+            : null,
+          error_class: mcpErrors[0]?.error ?? null,
+          timeline: timeline("mcp"),
         },
-        { id: "action_log", name: "Action log", state: "ok", ...quiet },
-        { id: "allowlist", name: "Allowlist store", state: "ok", ...quiet },
+        {
+          id: "action_log",
+          name: "Action log",
+          state: "ok",
+          ...quiet,
+          timeline: timeline("action_log"),
+        },
+        {
+          id: "allowlist",
+          name: "Allowlist store",
+          state: "ok",
+          ...quiet,
+          timeline: timeline("allowlist"),
+        },
       ],
+      incidents,
+      enforcement: enforcement(),
+      about: { version: "0.4.2", release: RELEASE },
     }
   }
 
@@ -521,6 +931,7 @@ export function createFixtures(now: () => number = () => Date.now()) {
       })
     preview.used = true
     const restoredId = crypto.randomUUID()
+    const callId = crypto.randomUUID().replaceAll("-", "")
     const counts = {
       requested: action.counts.completed,
       completed: action.counts.completed,
@@ -528,6 +939,10 @@ export function createFixtures(now: () => number = () => Date.now()) {
       failed: 0,
     }
     const time = new Date(now()).toISOString()
+    const chunks = action.chunks.map((c) => ({
+      ...c,
+      status: "completed" as const,
+    }))
     actions.set(restoredId, {
       id: restoredId,
       tool: "unarchive_messages",
@@ -536,7 +951,9 @@ export function createFixtures(now: () => number = () => Date.now()) {
       dry_run: false,
       status: "completed",
       counts,
-      chunks: action.chunks.map((c) => ({ ...c, status: "completed" })),
+      chunks,
+      call_id: callId,
+      source_action_id: id,
     })
     action.unarchive = {
       eligible: false,
@@ -544,14 +961,18 @@ export function createFixtures(now: () => number = () => Date.now()) {
       restored_by: restoredId,
     }
     events.unshift({
-      id: events.length,
+      id: callId,
       time,
       tool: "unarchive_messages",
       outcome: "ok",
       duration_ms: 1840.2,
       login_ms: 64,
+      connected: true,
       error_class: null,
       action_id: restoredId,
+      dry_run: false,
+      source_action_id: id,
+      chunks,
       counts: {
         ...emptyCounts(),
         requested: counts.requested,
@@ -578,25 +999,19 @@ export function createFixtures(now: () => number = () => Date.now()) {
     const url = new URL(path, "http://core")
     const parts = url.pathname.split("/").filter(Boolean).slice(1)
     const input = (body ?? {}) as Record<string, unknown>
+    const range = (url.searchParams.get("range") || "") as Range
+    const tz = url.searchParams.get("tz") || "UTC"
     if (method === "GET" && parts[0] === "overview")
-      return json(
-        200,
-        overview((url.searchParams.get("range") || "7d") as Range)
-      )
-    if (method === "GET" && parts[0] === "health") return json(200, health())
-    if (method === "GET" && parts[0] === "activity") {
-      const tool = url.searchParams.get("tool")
-      const outcome = url.searchParams.get("outcome")
-      const rows = events.filter(
-        (e) => (!tool || e.tool === tool) && (!outcome || e.outcome === outcome)
-      )
-      return json(200, {
-        rows: rows.slice(0, 200).map(({ id: _id, ...row }) => {
-          void _id
-          return row
-        }),
-        truncated: rows.length > 200,
-      })
+      return json(200, overview(range || "7d", tz))
+    if (method === "GET" && parts[0] === "health")
+      return json(200, health(range || "24h", tz))
+    if (method === "GET" && parts[0] === "activity" && parts.length === 1)
+      return json(200, activity(url.searchParams))
+    if (method === "GET" && parts[0] === "activity" && parts.length === 2) {
+      const call = events.find((e) => e.id === parts[1])
+      if (!call) return notFound("Call")
+      const action = call.action_id ? actions.get(call.action_id) : undefined
+      return json(200, { call, action: action ?? null })
     }
     if (parts[0] === "actions" && parts[1]) {
       if (method === "GET" && parts.length === 2) {
@@ -613,7 +1028,9 @@ export function createFixtures(now: () => number = () => Date.now()) {
       if (parts.length === 1 && method === "POST") {
         const address = String(input.address)
         if (entries.some((e) => e.address === address))
-          return json(409, { error: `${address} is already allowed` })
+          return json(409, {
+            error: "That address is already on the allowlist",
+          })
         const today = Math.floor(now() / DAY) * DAY
         const entry: AllowlistEntry = {
           id: crypto.randomUUID(),
@@ -634,6 +1051,18 @@ export function createFixtures(now: () => number = () => Date.now()) {
         record(entry.id, "added")
         return json(201, { entry })
       }
+      if (parts.length === 3 && parts[2] === "restore" && method === "POST") {
+        const entry = removed.get(parts[1])
+        if (!entry) return notFound("Entry")
+        if (entries.some((e) => e.address === entry.address))
+          return json(409, {
+            error: "That address is already on the allowlist",
+          })
+        removed.delete(entry.id)
+        entries.push(entry)
+        record(entry.id, "added")
+        return json(200, { entry })
+      }
       const entry = entries.find((e) => e.id === parts[1])
       if (!entry) return notFound("Entry")
       if (method === "GET")
@@ -644,7 +1073,9 @@ export function createFixtures(now: () => number = () => Date.now()) {
           input.address !== entry.address
         ) {
           if (entries.some((e) => e.address === input.address))
-            return json(409, { error: `${input.address} is already allowed` })
+            return json(409, {
+              error: "That address is already on the allowlist",
+            })
           entry.address = input.address
           record(entry.id, "address_changed")
         }
@@ -660,6 +1091,7 @@ export function createFixtures(now: () => number = () => Date.now()) {
       }
       if (method === "DELETE") {
         entries.splice(entries.indexOf(entry), 1)
+        removed.set(entry.id, entry)
         record(entry.id, "removed")
         return json(200, {})
       }

@@ -220,7 +220,28 @@ def main():
             ident = value['entry']['id']
             assert request('/api/allowlist/'+ident, 'PATCH', {'note':'Changed synthetic'})[0] == 200
             assert request('/api/allowlist/'+ident)[0] == 200
+            history = [h['change'] for h in request('/api/allowlist/'+ident)[1]['history']]
+            assert history == ['note_changed', 'added'], history
             assert request('/api/allowlist/'+ident,'DELETE',{})[0] == 200
+            assert request('/api/allowlist/'+ident)[0] == 404
+            status, value = request(f'/api/allowlist/{ident}/restore', 'POST')
+            assert status == 200 and value['entry']['note'] == 'Changed synthetic', (status, value)
+            # Filtered, paged activity and per-call detail through the web proxy.
+            status, value = request('/api/activity?tool=read_messages,list_messages&refusals=1&limit=1&tz=America/New_York&q=not%20allowlisted')
+            assert status == 200 and value['total'] == 1 and value['rows'][0]['tool'] == 'read_messages', value
+            assert value['series']['points'] and set(value['series']['points'][0]) == {'start', 'ok', 'refused', 'error'}
+            call = value['rows'][0]['id']
+            status, value = request('/api/activity/' + call)
+            assert status == 200 and value['call']['counts']['refused']['sender_not_allowlisted'] == 1 and value['action'] is None
+            assert request('/api/activity?tool=send_message')[0] == 400
+            assert request('/api/activity/not-a-call')[0] == 400
+            status, value = request('/api/health?range=7d&tz=America/New_York')
+            assert status == 200 and value['range'] == '7d' and all(len(c['timeline']) == 28 for c in value['components'])
+            assert value['enforcement']['authserv_configured'] and value['about']['version']
+            status, value = request('/api/overview?range=24h&tz=America/New_York')
+            assert value['previous']['calls'] == 0 and 'attention' in value
+            text = json.dumps([request('/api/activity')[1], request('/api/overview?range=30d')[1], request('/api/health?range=30d')[1]])
+            assert 'Synthetic full-stack fixture' not in text and 'unapproved@example.net' not in text and 'INBOX' not in text
             assert request('/api/allowlist','POST',{'address':'bad@example.org'},token('wrong'))[0] == 401
             assert request('/api/overview',assertion=token(expires=-1))[0] == 401
             with urllib.request.urlopen(f'http://127.0.0.1:{metrics.server_port}/metrics',timeout=3) as response:

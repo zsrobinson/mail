@@ -27,17 +27,39 @@ export function useAddSender() {
 export function useUpdateSender(id: string) {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: (input: Partial<AllowlistInput>) =>
-      sendJson<{ entry: AllowlistEntry }>(
+    mutationFn: (input: Partial<AllowlistInput> & { success?: string }) => {
+      const { success: _success, ...body } = input
+      void _success
+      return sendJson<{ entry: AllowlistEntry }>(
         "PATCH",
         `/api/allowlist/${encodeURIComponent(id)}`,
-        input
-      ),
-    onSuccess: () => {
-      toast.success("Changes saved")
+        body
+      )
+    },
+    onSuccess: (_, input) => {
+      toast.success(input.success ?? "Changes saved")
+      void client.invalidateQueries({ queryKey: ["overview"] })
       return client.invalidateQueries({ queryKey: ["allowlist"] })
     },
     onError: fail("Changes not saved"),
+  })
+}
+
+/** Undo a removal: the same entry returns with its matches and history. */
+export function useRestoreSender() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      sendJson<{ entry: AllowlistEntry }>(
+        "POST",
+        `/api/allowlist/${encodeURIComponent(id)}/restore`
+      ),
+    onSuccess: ({ entry }) => {
+      toast.success(`Restored ${entry.address}`)
+      void client.invalidateQueries({ queryKey: ["overview"] })
+      return client.invalidateQueries({ queryKey: ["allowlist"] })
+    },
+    onError: fail("Sender not restored"),
   })
 }
 
@@ -48,6 +70,7 @@ export function useRemoveSender(id: string) {
       sendJson<object>("DELETE", `/api/allowlist/${encodeURIComponent(id)}`),
     onSuccess: () => {
       client.removeQueries({ queryKey: ["allowlist", id] })
+      void client.invalidateQueries({ queryKey: ["overview"] })
       return client.invalidateQueries({ queryKey: ["allowlist"] })
     },
     onError: fail("Sender not removed"),
@@ -77,6 +100,7 @@ export function useConfirmUnarchive(id: string) {
       toast.success(`Unarchived ${result.counts.completed} messages`)
       void client.invalidateQueries({ queryKey: ["activity"] })
       void client.invalidateQueries({ queryKey: ["overview"] })
+      void client.invalidateQueries({ queryKey: ["call"] })
       return client.invalidateQueries({ queryKey: ["action", id] })
     },
     onError: fail("Unarchive failed"),

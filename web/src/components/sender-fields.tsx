@@ -6,6 +6,12 @@ import {
   FieldGroup,
   FieldLabel,
 } from "@zsrobinson/shell/ui/field"
+import { DatePicker } from "@zsrobinson/shell/blocks/date-picker"
+import {
+  addDays,
+  formatCalendarDate,
+  viewerTimeZone,
+} from "@zsrobinson/shell/lib/calendar-date"
 import { Input } from "@zsrobinson/shell/ui/input"
 import { Textarea } from "@zsrobinson/shell/ui/textarea"
 import {
@@ -37,8 +43,29 @@ export function senderInput(draft: SenderDraft): AllowlistInput {
   }
 }
 
-const tomorrow = () =>
-  new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
+/** Quick expiry choices, counted from today in the viewer's zone. */
+export const EXPIRY_PRESETS = () => [
+  { label: "1 week", value: addDays(7) },
+  { label: "30 days", value: addDays(30) },
+  { label: "90 days", value: addDays(90) },
+  { label: "No end", value: "" },
+]
+
+/** "Access ends at 11:59 PM on Nov 29 (America/New_York)." */
+export function expiryNote(until: string) {
+  if (!until) return "No end date: access lasts until you remove the sender."
+  return `Access ends at ${endOfDayLabel(until)} on ${formatCalendarDate(until)} (${viewerTimeZone()}).`
+}
+
+/** "11:59 PM EST" for the end of a calendar day in the viewer's zone. */
+export function endOfDayLabel(until: string) {
+  const end = new Date(expiryFromDate(until) ?? Date.now())
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(end)
+}
 
 export function SenderFields({
   draft,
@@ -94,22 +121,21 @@ export function SenderFields({
       </Field>
       <Field data-invalid={showErrors && Boolean(errors.until)}>
         <FieldLabel htmlFor={`${id}-until`}>Allow until</FieldLabel>
-        <Input
+        <DatePicker
           id={`${id}-until`}
-          type="date"
-          min={tomorrow()}
-          className="w-full sm:w-48"
+          className="w-full sm:w-64"
           value={draft.until}
-          onChange={(e) => onChange({ ...draft, until: e.target.value })}
+          placeholder="No end date"
+          clearable
+          aria-invalid={showErrors && Boolean(errors.until)}
+          disabled={{ before: new Date() }}
+          presets={EXPIRY_PRESETS()}
+          onChange={(until) => onChange({ ...draft, until })}
         />
         {showErrors && errors.until ? (
           <FieldError>{errors.until}</FieldError>
         ) : (
-          <FieldDescription>
-            {draft.until
-              ? "Access ends at the end of this day, UTC."
-              : "Leave empty to allow with no end date."}
-          </FieldDescription>
+          <FieldDescription>{expiryNote(draft.until)}</FieldDescription>
         )}
       </Field>
     </FieldGroup>

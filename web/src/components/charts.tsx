@@ -3,133 +3,33 @@ import {
   AreaChart,
   Bar,
   BarChart,
-  CartesianGrid,
   LabelList,
   ReferenceDot,
   XAxis,
   YAxis,
 } from "recharts"
-import { useIsMobile } from "@zsrobinson/shell/hooks/use-mobile"
 import {
   ChartContainer,
-  ChartLegend,
-  ChartLegendContent,
   ChartTooltip,
   ChartTooltipContent,
   type ChartConfig,
 } from "@zsrobinson/shell/ui/chart"
-import { chartNumber } from "@zsrobinson/shell/blocks/chart-card"
-import { epoch, formatMs } from "@/lib/format"
-import { countTicks, evenTicks } from "@/lib/ticks"
+import {
+  chartNumber,
+  type ChartPoint,
+} from "@zsrobinson/shell/blocks/chart-card"
+import { formatMs } from "@/lib/format"
 import type { LatencyPoint } from "@/lib/types"
 
-type Row = { start: string } & Record<string, number | string>
-
-const tickFormat = (bucketSeconds: number) => (value: number) =>
-  new Date(value * 1000).toLocaleString(
-    undefined,
-    bucketSeconds >= 86_400
-      ? { month: "short", day: "numeric" }
-      : bucketSeconds >= 21_600
-        ? { weekday: "short", hour: "numeric" }
-        : { hour: "numeric" }
-  )
-
-/** Stacked bars per time bucket, using the shared Rhea chart container. */
-export function StackedBars({
-  rows,
-  config,
-  bucketSeconds,
-  label,
-  height = "h-56",
-  maxTicks = 7,
-}: {
-  rows: Row[]
-  config: ChartConfig
-  bucketSeconds: number
-  label: string
-  height?: string
-  /** Most x labels at desktop width; phones get half. */
-  maxTicks?: number
-}) {
-  const mobile = useIsMobile()
-  const keys = Object.keys(config)
-  const data = rows.map((row) => ({ ...row, time: epoch(row.start) }))
-  const format = tickFormat(bucketSeconds)
-  const ticks = evenTicks(
-    data.map((d) => d.time),
-    mobile ? Math.ceil(maxTicks / 2) : maxTicks
-  )
-  const max = Math.max(
-    0,
-    ...rows.map((row) => keys.reduce((sum, k) => sum + Number(row[k] ?? 0), 0))
-  )
-  const yTicks = countTicks(max)
-  return (
-    <ChartContainer
-      config={config}
-      role="img"
-      aria-label={label}
-      className={`w-full tabular-nums ${height}`}
-    >
-      <BarChart
-        accessibilityLayer
-        data={data}
-        margin={{ left: 0, right: 20, top: 8, bottom: 0 }}
-      >
-        <CartesianGrid vertical={false} />
-        <XAxis
-          dataKey="time"
-          tickLine={false}
-          axisLine={false}
-          ticks={ticks}
-          interval={0}
-          tickMargin={8}
-          tickFormatter={format}
-        />
-        <YAxis
-          width={32}
-          tickLine={false}
-          axisLine={false}
-          allowDecimals={false}
-          ticks={yTicks}
-          domain={yTicks ? [0, yTicks[yTicks.length - 1]] : [0, "auto"]}
-          tickFormatter={chartNumber}
-        />
-        <ChartTooltip
-          content={
-            <ChartTooltipContent
-              labelFormatter={(_, payload) => {
-                const time = Number(payload?.[0]?.payload?.time)
-                return Number.isFinite(time)
-                  ? new Date(time * 1000).toLocaleString(undefined, {
-                      month: "short",
-                      day: "numeric",
-                      hour: bucketSeconds < 86_400 ? "numeric" : undefined,
-                    })
-                  : ""
-              }}
-            />
-          }
-        />
-        {keys.length > 1 ? (
-          <ChartLegend
-            content={<ChartLegendContent />}
-            itemSorter={(item) => keys.indexOf(String(item.dataKey))}
-          />
-        ) : null}
-        {keys.map((key) => (
-          <Bar
-            key={key}
-            dataKey={key}
-            stackId="a"
-            fill={`var(--color-${key})`}
-            isAnimationActive={false}
-          />
-        ))}
-      </BarChart>
-    </ChartContainer>
-  )
+/** Dense series from the API (ISO `start`) as shell chart points (epoch ms). */
+export function toPoints<K extends string>(
+  rows: ({ start: string } & Record<K, number>)[],
+  keys: readonly K[]
+): ChartPoint[] {
+  return rows.map((row) => ({
+    time: Date.parse(row.start),
+    ...Object.fromEntries(keys.map((k) => [k, row[k]])),
+  }))
 }
 
 /** One horizontal bar per category with its value at the end. */
@@ -211,7 +111,7 @@ export function LatencySparkline({
   points: LatencyPoint[]
   label: string
 }) {
-  const data = points.map((p) => ({ time: epoch(p.time), ms: p.ms }))
+  const data = points.map((p) => ({ time: Date.parse(p.time), ms: p.ms }))
   const measured = data.flatMap((d) => (d.ms === null ? [] : [d.ms]))
   const failures = data.flatMap((d, i) => {
     if (d.ms !== null) return []
@@ -255,7 +155,7 @@ export function LatencySparkline({
               labelFormatter={(_, payload) => {
                 const time = Number(payload?.[0]?.payload?.time)
                 return Number.isFinite(time)
-                  ? new Date(time * 1000).toLocaleTimeString(undefined, {
+                  ? new Date(time).toLocaleTimeString(undefined, {
                       hour: "numeric",
                       minute: "2-digit",
                     })
