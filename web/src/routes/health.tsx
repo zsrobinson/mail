@@ -124,7 +124,7 @@ function HealthPage() {
         <PageActions>
           {grafana ? (
             <Button
-              variant="ghost"
+              variant="outline"
               size="sm"
               render={<a href={grafana.url} target="_blank" rel="noreferrer" />}
               nativeButton={false}
@@ -206,7 +206,7 @@ function HealthCards({ data, range }: { data: Health; range: Range }) {
                   </h3>
                   <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
                     {known.length
-                      ? `${Math.round((good / known.length) * 1000) / 10}% of periods clear`
+                      ? `${Math.round((good / known.length) * 1000) / 10}% clear`
                       : "No data"}
                   </span>
                 </div>

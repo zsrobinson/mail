@@ -400,6 +400,7 @@ function ActivityPage() {
           <Card>
             <CardContent>
               <TrendChart
+                integer
                 kind="bar"
                 stacked
                 data={data.series.points.map((p) => ({

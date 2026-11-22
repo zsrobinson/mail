@@ -204,7 +204,7 @@ function AllowlistPage() {
             <InputGroupInput
               type="search"
               aria-label="Search addresses and notes"
-              placeholder="Search addresses and notes"
+              placeholder="Search senders and notes"
               value={search.q ?? ""}
               onChange={(e) => set({ q: e.target.value || undefined })}
             />

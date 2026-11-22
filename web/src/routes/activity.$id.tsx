@@ -115,7 +115,7 @@ function CallPage() {
         </div>
         <PageActions>
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             render={
               <Link to="/activity" search={{ tool: call.tool as string }} />

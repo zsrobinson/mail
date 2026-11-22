@@ -54,7 +54,8 @@ export const EXPIRY_PRESETS = () => [
 /** "Access ends at 11:59 PM on Nov 29 (America/New_York)." */
 export function expiryNote(until: string) {
   if (!until) return "No end date: access lasts until you remove the sender."
-  return `Access ends at ${endOfDayLabel(until)} on ${formatCalendarDate(until)} (${viewerTimeZone()}).`
+  const ended = Date.parse(expiryFromDate(until) ?? "") <= Date.now()
+  return `Access ${ended ? "ended" : "ends"} at ${endOfDayLabel(until)} on ${formatCalendarDate(until)} (${viewerTimeZone()}).`
 }
 
 /** "11:59 PM EST" for the end of a calendar day in the viewer's zone. */

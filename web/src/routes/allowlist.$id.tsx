@@ -230,6 +230,7 @@ function MatchesCard({ entry }: { entry: AllowlistEntry }) {
           </p>
         ) : (
           <TrendChart
+            integer
             kind="bar"
             utc
             data={series.map((m) => ({

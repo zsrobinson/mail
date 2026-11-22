@@ -236,6 +236,7 @@ function OverviewCards({ data, range }: { data: Overview; range: Range }) {
             </Stat>
           </StatRow>
           <TrendChart
+            integer
             kind="bar"
             stacked
             data={data.calls.map((c) => ({
@@ -284,6 +285,7 @@ function OverviewCards({ data, range }: { data: Overview; range: Range }) {
               </Stat>
             </StatRow>
             <TrendChart
+              integer
               kind="bar"
               stacked
               data={data.body_reads.map((r) => ({
