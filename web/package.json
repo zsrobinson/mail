@@ -27,7 +27,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.1.0",
-    "@zsrobinson/shell": "git+https://github.com/zsrobinson/shell.git#e682407c9a0ba86eb9d6aeb64f7d6163a33ec792",
+    "@zsrobinson/shell": "git+https://github.com/zsrobinson/shell.git#2b50b2d94e5fd1c96655754f3fa1472f4600970d",
     "esbuild": "^0.28.2",
     "eslint": "^10.15.0",
     "eslint-plugin-react-hooks": "^7.1.1",
